@@ -357,7 +357,7 @@ def analyze_attempt(
         group_id=condition_key,
         attempt_number=attempt_number,
         audio_path=str(audio_path),
-        asr_adapter="mock_asr",
+        asr_adapter=ASR_MODE,
         asr_transcript=transcript,
         duration_seconds=features["duration_seconds"],
         speech_rate_wpm=features["speech_rate_wpm"],
