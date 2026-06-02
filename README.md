@@ -1,21 +1,33 @@
-# Speech-AI Feedback Research Platform
+# Speech-AI Formative Speaking Practice Platform
 
-A runnable lightweight research platform for controlled education-AI experiments on second-language speaking feedback, feedback use, learner modelling, adaptive formative feedback, and human validation of speech-AI diagnosis.
+A runnable, role-based platform for controlled L2 read-aloud speaking practice. It supports student practice, model pronunciation playback, ASR-supported preliminary formative feedback, teacher feedback, peer review, account-based data separation, and clean research export.
+
+This is not a high-stakes speaking assessment system. Automatic scores and automatic diagnoses are formative practice indicators only. Human ratings are needed for strong learning-outcome claims.
 
 ## Main Features
 
-- Learners enter a participant ID, group, and session ID.
-- Learners select a read-aloud task, record in the browser, or upload audio.
-- Backend stores audio locally and analyzes transcript match, duration, speech rate, long pauses, missing words, substitutions, ASR sanity warnings, invalid-audio status, and a lightweight practice clarity score.
-- Experimental conditions A-G are supported: assessment-only, transcript-only, score-only, explainable, adaptive, human-validated, and optional LLM-verbalized feedback.
-- Explainable and adaptive groups receive diagnosis, explanation, action guidance, revision goals, and metacognitive prompts.
-- Attempt history shows multiple attempts and improvement indicators.
-- Researcher dashboard reports condition-level statistics, feedback use, learner state, issue types, and revision events.
-- Annotation Review supports human validation of automatic diagnosis.
-- Study Design supports default conditions and participant assignment.
-- CSV exports support participants, attempts, feedback, revisions, learner states, annotations, tasks, and study design.
-- Mock ASR mode runs without downloading a speech model.
-- Optional faster-whisper integration can be enabled for real ASR.
+- Pilot login uses `user_code` only.
+- Roles: `student`, `teacher`, `peer_reviewer`, `researcher_admin`.
+- Student navigation: Practice, My Feedback, My Progress.
+- Teacher navigation: Give Feedback, Class Review, Class Summary.
+- Peer reviewer navigation: Peer Review Tasks, Submitted Reviews.
+- Researcher/admin navigation: Study Setup, Task Bank, Users and Groups, Data Export, System Status.
+- Students select a read-aloud task, listen to model pronunciation, record or upload audio, submit to FastAPI, and view separated AI/teacher/peer feedback.
+- TTS model pronunciation is available by default through browser SpeechSynthesis fallback and is clearly labelled as a browser-generated reference voice when backend cached TTS is unavailable.
+- Backend stores audio locally and analyzes transcript match, duration, speech rate, pauses, missing words, substitutions, ASR sanity warnings, invalid-audio status, and a lightweight practice clarity score.
+- Teachers can draft and release feedback with ratings, comments, target sounds, observed sounds, and action guidance.
+- Peer reviewers can submit supportive peer feedback for assigned review tasks.
+- Researcher/admin users can create/import/export users, manage classes/groups/tasks, check system status, and export clean study data.
+- Mock ASR mode runs without downloading a speech model. Optional faster-whisper integration can be enabled for real ASR.
+
+Default pilot accounts created on first startup:
+
+```text
+student001
+teacher001
+peer001
+admin001
+```
 
 ## Tech Stack
 
@@ -47,6 +59,52 @@ npm run dev
 ```
 
 Open `http://127.0.0.1:5173`.
+
+## Role-Based Pilot Workflow
+
+Login:
+
+- `POST /api/login` with JSON `{ "user_code": "student001" }`
+- `GET /api/me?user_code=student001`
+
+Account and grouping:
+
+- `GET/POST /api/users`
+- `POST /api/users/import`
+- `GET /api/users/export`
+- `GET/POST /api/classes`
+- `GET/POST /api/groups`
+
+Student:
+
+- `GET /api/student/tasks?user_code=student001`
+- `POST /api/attempts/analyze`
+- `GET /api/student/feedback?user_code=student001`
+- `GET /api/student/progress?user_code=student001`
+
+Teacher:
+
+- `GET /api/teacher/submissions?user_code=teacher001`
+- `POST /api/teacher/feedback`
+- `PUT /api/teacher/feedback/{feedback_id}`
+- `POST /api/teacher/feedback/{feedback_id}/release`
+- `GET /api/teacher/class-review?user_code=teacher001`
+- `GET /api/teacher/class-summary?user_code=teacher001`
+
+Peer reviewer:
+
+- `GET /api/peer/review-tasks?user_code=peer001`
+- `POST /api/peer/feedback`
+- `GET /api/peer/submitted-reviews?user_code=peer001`
+
+Task audio:
+
+- `POST /api/tasks/{task_id}/generate-tts`
+- `POST /api/tasks/{task_id}/model-audio`
+- `GET /api/tasks/{task_id}/model-audio`
+- `GET /api/tasks/{task_id}/focus-word-audio?word=thin`
+
+TTS note: the current lightweight deployment uses browser SpeechSynthesis as the free default model pronunciation fallback and stores `tts_status=browser_only`. Uploaded model audio can override the browser voice. Backend cached TTS generation is listed as a future feature in `FEATURE_COMPLETION_CHECKLIST.md`.
 
 ## GitHub Pages Deployment
 
@@ -182,15 +240,21 @@ The script prints `PASS` or `FAIL` for health, valid attempt evidence, revision 
 
 Use the dashboard buttons or these endpoints:
 
-- `GET /api/exports/full`
-- `GET /api/exports/participants`
-- `GET /api/exports/attempts`
-- `GET /api/exports/feedback`
-- `GET /api/exports/revisions`
-- `GET /api/exports/learner-states`
-- `GET /api/exports/annotations`
-- `GET /api/exports/study-design`
+- `GET /api/exports/all`
+- `GET /api/exports/users`
+- `GET /api/exports/classes`
+- `GET /api/exports/groups`
 - `GET /api/exports/tasks`
+- `GET /api/exports/tts-audio-status`
+- `GET /api/exports/attempts`
+- `GET /api/exports/ai-feedback`
+- `GET /api/exports/teacher-feedback`
+- `GET /api/exports/peer-feedback`
+- `GET /api/exports/feedback-views`
+- `GET /api/exports/revisions`
+- `GET /api/exports/learner-progress`
+- `GET /api/exports/teacher-orchestration-events`
+- `GET /api/exports/peer-review-assignments`
 
 Exports are also written under `data/exports`.
 

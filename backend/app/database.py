@@ -61,6 +61,39 @@ class Condition(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_code = Column(String, unique=True, index=True, nullable=False)
+    role = Column(String, index=True, nullable=False)
+    display_name = Column(String, default="")
+    class_id = Column(Integer, default=0, index=True)
+    group_id = Column(Integer, default=0, index=True)
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ClassRoom(Base):
+    __tablename__ = "classes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    class_code = Column(String, unique=True, index=True, nullable=False)
+    class_name = Column(String, default="")
+    teacher_user_id_optional = Column(Integer, default=0, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class LearnerGroup(Base):
+    __tablename__ = "groups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    group_code = Column(String, unique=True, index=True, nullable=False)
+    class_id = Column(Integer, default=0, index=True)
+    group_name = Column(String, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Task(Base):
     __tablename__ = "tasks"
 
@@ -75,6 +108,13 @@ class Task(Base):
     speaking_target = Column(String, default="")
     difficulty = Column(String, default="medium")
     model_audio_path = Column(String, default="")
+    model_audio_source = Column(String, default="tts")
+    tts_sentence_audio_path = Column(String, default="")
+    tts_focus_word_audio_json = Column(Text, default="{}")
+    uploaded_sentence_audio_path_optional = Column(String, default="")
+    uploaded_focus_word_audio_json_optional = Column(Text, default="{}")
+    tts_voice = Column(String, default="browser-default")
+    tts_status = Column(String, default="browser_only")
     feedback_allowed = Column(Boolean, default=True)
     revision_allowed = Column(Boolean, default=True)
     active = Column(Boolean, default=True)
@@ -317,6 +357,55 @@ class TeacherOrchestrationEvent(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class TeacherFeedback(Base):
+    __tablename__ = "teacher_feedback"
+
+    id = Column(Integer, primary_key=True)
+    teacher_user_id = Column(Integer, index=True, default=0)
+    participant_id = Column(String, index=True)
+    task_id = Column(Integer, index=True)
+    attempt_id = Column(Integer, index=True)
+    pronunciation_rating = Column(Float, default=0.0)
+    fluency_rating = Column(Float, default=0.0)
+    comprehensibility_rating = Column(Float, default=0.0)
+    target_word = Column(String, default="")
+    target_phoneme = Column(String, default="")
+    observed_phoneme = Column(String, default="")
+    comment = Column(Text, default="")
+    action_guidance = Column(Text, default="")
+    status = Column(String, default="draft")
+    released_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PeerReviewAssignment(Base):
+    __tablename__ = "peer_review_assignments"
+
+    id = Column(Integer, primary_key=True)
+    reviewer_user_id = Column(Integer, index=True, default=0)
+    participant_id = Column(String, index=True)
+    task_id = Column(Integer, index=True)
+    attempt_id = Column(Integer, index=True)
+    status = Column(String, default="assigned")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PeerFeedback(Base):
+    __tablename__ = "peer_feedback"
+
+    id = Column(Integer, primary_key=True)
+    assignment_id = Column(Integer, index=True, default=0)
+    reviewer_user_id = Column(Integer, index=True, default=0)
+    participant_id = Column(String, index=True)
+    task_id = Column(Integer, index=True)
+    attempt_id = Column(Integer, index=True)
+    clarity_rating = Column(Float, default=0.0)
+    encouragement = Column(Text, default="")
+    suggestion = Column(Text, default="")
+    status = Column(String, default="submitted")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class FeedbackTemplate(Base):
     __tablename__ = "feedback_templates"
 
@@ -378,6 +467,13 @@ def migrate_sqlite_columns():
             "issue_types_json": "TEXT DEFAULT '[]'",
             "focus_phonemes_json": "TEXT DEFAULT '[]'",
             "word_phoneme_map_json": "TEXT DEFAULT '{}'",
+            "model_audio_source": "VARCHAR DEFAULT 'tts'",
+            "tts_sentence_audio_path": "VARCHAR DEFAULT ''",
+            "tts_focus_word_audio_json": "TEXT DEFAULT '{}'",
+            "uploaded_sentence_audio_path_optional": "VARCHAR DEFAULT ''",
+            "uploaded_focus_word_audio_json_optional": "TEXT DEFAULT '{}'",
+            "tts_voice": "VARCHAR DEFAULT 'browser-default'",
+            "tts_status": "VARCHAR DEFAULT 'browser_only'",
             "feedback_allowed": "BOOLEAN DEFAULT 1",
             "revision_allowed": "BOOLEAN DEFAULT 1",
             "active": "BOOLEAN DEFAULT 1",
@@ -446,5 +542,33 @@ def get_db():
         db.close()
 
 
+def seed_pilot_accounts():
+    db = SessionLocal()
+    try:
+        if db.query(User).count() > 0:
+            return
+        class_row = ClassRoom(class_code="CLASS-A", class_name="Pilot Class A")
+        db.add(class_row)
+        db.commit()
+        db.refresh(class_row)
+        group_row = LearnerGroup(group_code="GROUP-A1", class_id=class_row.id, group_name="AI plus teacher feedback")
+        db.add(group_row)
+        db.commit()
+        db.refresh(group_row)
+        teacher = User(user_code="teacher001", role="teacher", display_name="Pilot Teacher", class_id=class_row.id, group_id=group_row.id)
+        student = User(user_code="student001", role="student", display_name="Pilot Student", class_id=class_row.id, group_id=group_row.id)
+        peer = User(user_code="peer001", role="peer_reviewer", display_name="Peer Reviewer", class_id=class_row.id, group_id=group_row.id)
+        admin = User(user_code="admin001", role="researcher_admin", display_name="Research Admin", class_id=class_row.id, group_id=group_row.id)
+        db.add_all([teacher, student, peer, admin])
+        db.commit()
+        class_row.teacher_user_id_optional = teacher.id
+        participant = Participant(participant_id="student001", participant_code="student001", group_id="ai_plus_teacher_feedback", group_label="AI plus teacher feedback", class_id=str(class_row.id))
+        db.add(participant)
+        db.commit()
+    finally:
+        db.close()
+
+
 Base.metadata.create_all(bind=engine)
 migrate_sqlite_columns()
+seed_pilot_accounts()

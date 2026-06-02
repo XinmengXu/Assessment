@@ -12,6 +12,9 @@ const blank = {
   difficulty: "medium",
   task_type: "practice",
   model_audio_path: "",
+  model_audio_source: "tts",
+  tts_voice: "browser-default",
+  tts_status: "browser_only",
   feedback_allowed: true,
   revision_allowed: true,
   active: true,
@@ -33,6 +36,9 @@ export function TaskManagement({ tasks, onTasks }: { tasks: Task[]; onTasks: (ta
       difficulty: task.difficulty,
       task_type: task.task_type || "practice",
       model_audio_path: task.model_audio_path,
+      model_audio_source: task.model_audio_source || "tts",
+      tts_voice: task.tts_voice || "browser-default",
+      tts_status: task.tts_status || "browser_only",
       feedback_allowed: task.feedback_allowed !== false,
       revision_allowed: task.revision_allowed !== false,
       active: task.active !== false,
@@ -56,6 +62,17 @@ export function TaskManagement({ tasks, onTasks }: { tasks: Task[]; onTasks: (ta
     setEditingId(null);
   }
 
+  async function generateTts(taskId: number) {
+    await api(`/tasks/${taskId}/generate-tts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tts_voice: form.tts_voice || "browser-default" }) });
+    const updated = await api<Task[]>("/tasks");
+    onTasks(updated);
+  }
+
+  function preview(text: string) {
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+  }
+
   return (
     <section className="page-grid">
       <div className="panel">
@@ -69,7 +86,10 @@ export function TaskManagement({ tasks, onTasks }: { tasks: Task[]; onTasks: (ta
         <label>Issue types<input value={form.issue_types} onChange={(event) => setForm({ ...form, issue_types: event.target.value })} placeholder="theta_words, final_consonants" /></label>
         <label>Speaking target<input value={form.speaking_target} onChange={(event) => setForm({ ...form, speaking_target: event.target.value })} /></label>
         <label>Difficulty<select value={form.difficulty} onChange={(event) => setForm({ ...form, difficulty: event.target.value })}><option>easy</option><option>medium</option><option>hard</option></select></label>
-        <label>Model audio path<input value={form.model_audio_path} onChange={(event) => setForm({ ...form, model_audio_path: event.target.value })} /></label>
+        <label>TTS voice<input value={form.tts_voice} onChange={(event) => setForm({ ...form, tts_voice: event.target.value })} placeholder="browser-default" /></label>
+        <label>Model audio source<select value={form.model_audio_source} onChange={(event) => setForm({ ...form, model_audio_source: event.target.value })}><option value="tts">tts</option><option value="uploaded">uploaded</option><option value="missing">missing</option></select></label>
+        <label>Model audio path<input value={form.model_audio_path} onChange={(event) => setForm({ ...form, model_audio_path: event.target.value })} placeholder="Optional uploaded override" /></label>
+        <div className="feedback-box"><strong>TTS status</strong><p>{form.tts_status === "browser_only" ? "Browser-generated reference voice; backend cached TTS is not available in this deployment." : form.tts_status}</p></div>
         <label className="check-row"><input type="checkbox" checked={form.feedback_allowed} onChange={(event) => setForm({ ...form, feedback_allowed: event.target.checked })} /> Feedback allowed</label>
         <label className="check-row"><input type="checkbox" checked={form.revision_allowed} onChange={(event) => setForm({ ...form, revision_allowed: event.target.checked })} /> Revision allowed</label>
         <button className="primary submit" onClick={save}>{editingId ? <Save size={18} /> : <Plus size={18} />} Save task</button>
@@ -82,6 +102,8 @@ export function TaskManagement({ tasks, onTasks }: { tasks: Task[]; onTasks: (ta
               <strong>Task {task.id}</strong>
               <span>{task.target_text}</span>
               <small>{task.task_type} - {task.speaking_target} - {task.difficulty}</small>
+              <small>TTS: {task.tts_status || "browser_only"} / source: {task.model_audio_source || "tts"}</small>
+              <span className="actions"><span className="file-button" onClick={(event) => { event.stopPropagation(); preview(task.target_text); }}>Preview TTS</span><span className="file-button" onClick={(event) => { event.stopPropagation(); generateTts(task.id); }}>Generate TTS</span></span>
               {task.task_type === "practice" && !(task.focus_phonemes || []).length ? <small>This task cannot support sound-specific feedback until focus phonemes are added.</small> : null}
             </button>
           ))}

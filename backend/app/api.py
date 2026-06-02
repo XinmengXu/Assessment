@@ -21,6 +21,7 @@ from .config import ASR_MODE, WHISPER_COMPUTE_TYPE, WHISPER_DEVICE, WHISPER_MODE
 from .database import (
     Annotation,
     Attempt,
+    ClassRoom,
     Condition,
     FeedbackItem,
     FeedbackView,
@@ -28,13 +29,18 @@ from .database import (
     ExternalAssessmentScore,
     IssueRecord,
     LearnerState,
+    LearnerGroup,
     Participant,
+    PeerFeedback,
+    PeerReviewAssignment,
     PronunciationEvidence,
     RevisionEvent,
     Study,
     SystemVersion,
+    TeacherFeedback,
     TeacherOrchestrationEvent,
     Task,
+    User,
     get_db,
 )
 from .schemas import AnnotationCreate, ParticipantCreate, ParticipantRead, TaskCreate, TaskRead
@@ -75,6 +81,13 @@ def _task_to_schema(task):
         speaking_target=task.speaking_target or "",
         difficulty=task.difficulty or "medium",
         model_audio_path=task.model_audio_path or "",
+        model_audio_source=getattr(task, "model_audio_source", "tts") or "tts",
+        tts_sentence_audio_path=getattr(task, "tts_sentence_audio_path", "") or "",
+        tts_focus_word_audio_json=_json(getattr(task, "tts_focus_word_audio_json", "{}"), "{}"),
+        uploaded_sentence_audio_path_optional=getattr(task, "uploaded_sentence_audio_path_optional", "") or "",
+        uploaded_focus_word_audio_json_optional=_json(getattr(task, "uploaded_focus_word_audio_json_optional", "{}"), "{}"),
+        tts_voice=getattr(task, "tts_voice", "browser-default") or "browser-default",
+        tts_status=getattr(task, "tts_status", "browser_only") or "browser_only",
         feedback_allowed=bool(task.feedback_allowed),
         revision_allowed=bool(task.revision_allowed),
         active=bool(task.active),
@@ -269,6 +282,425 @@ def health():
     }
 
 
+ROLE_LABELS = {
+    "assessment_only": "Practice score only",
+    "ai_feedback": "AI-supported practice feedback",
+    "ai_plus_teacher_feedback": "AI feedback plus teacher feedback",
+    "ai_plus_peer_feedback": "AI feedback plus peer feedback",
+    "ai_plus_teacher_moderated_peer_feedback": "AI plus teacher-moderated peer feedback",
+    "teacher_feedback_only": "Teacher feedback only",
+    "peer_feedback_only": "Peer feedback only",
+}
+
+
+def _user_dict(user):
+    if not user:
+        return None
+    return {
+        "id": user.id,
+        "user_code": user.user_code,
+        "role": user.role,
+        "display_name": user.display_name or user.user_code,
+        "class_id": user.class_id,
+        "group_id": user.group_id,
+        "active": bool(user.active),
+        "created_at": user.created_at,
+    }
+
+
+def _user_by_code(db, user_code):
+    return db.query(User).filter(User.user_code == user_code, User.active == True).first()  # noqa: E712
+
+
+def _participant_id_for_user(user):
+    return user.user_code if user and user.role == "student" else ""
+
+
+def _attempt_with_task(db, attempt):
+    data = _attempt_to_dict(db, attempt)
+    data["audio_url"] = "/api/attempts/%s/audio" % attempt.id
+    return data
+
+
+@router.post("/login")
+def login(payload: dict, db: Session = Depends(get_db)):
+    user_code = (payload or {}).get("user_code", "").strip()
+    if not user_code:
+        raise HTTPException(status_code=400, detail="user_code is required")
+    user = _user_by_code(db, user_code)
+    if not user:
+        raise HTTPException(status_code=404, detail="User code not found or inactive")
+    return {"user": _user_dict(user), "token_type": "pilot_user_code", "student_friendly_workflows": ROLE_LABELS}
+
+
+@router.get("/me")
+def me(user_code: str, db: Session = Depends(get_db)):
+    user = _user_by_code(db, user_code)
+    if not user:
+        raise HTTPException(status_code=404, detail="User code not found or inactive")
+    return _user_dict(user)
+
+
+@router.get("/users")
+def list_users(db: Session = Depends(get_db)):
+    return [_user_dict(user) for user in db.query(User).order_by(User.id.asc()).all()]
+
+
+@router.post("/users")
+def create_user(payload: dict, db: Session = Depends(get_db)):
+    user_code = (payload or {}).get("user_code", "").strip()
+    role = (payload or {}).get("role", "student").strip()
+    if not user_code:
+        raise HTTPException(status_code=400, detail="user_code is required")
+    if role not in ["student", "teacher", "peer_reviewer", "researcher_admin"]:
+        raise HTTPException(status_code=400, detail="Unknown role")
+    user = db.query(User).filter(User.user_code == user_code).first()
+    if not user:
+        user = User(user_code=user_code, role=role)
+        db.add(user)
+    user.role = role
+    user.display_name = payload.get("display_name", user_code)
+    user.class_id = int(payload.get("class_id") or 0)
+    user.group_id = int(payload.get("group_id") or 0)
+    user.active = bool(payload.get("active", True))
+    db.commit()
+    db.refresh(user)
+    if user.role == "student":
+        participant = db.query(Participant).filter(Participant.participant_id == user.user_code).first()
+        if not participant:
+            db.add(Participant(participant_id=user.user_code, participant_code=user.user_code, group_id="ai_feedback", class_id=str(user.class_id)))
+            db.commit()
+    return _user_dict(user)
+
+
+@router.post("/users/import")
+def import_users(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    content = file.file.read().decode("utf-8-sig")
+    rows = csv.DictReader(content.splitlines())
+    imported = 0
+    for row in rows:
+        create_user(row, db)
+        imported += 1
+    return {"imported": imported}
+
+
+@router.get("/users/export")
+def export_users_alias(db: Session = Depends(get_db)):
+    return _write_csv(db, "users", [clean_model(user) for user in db.query(User).all()])
+
+
+@router.get("/classes")
+def list_classes(db: Session = Depends(get_db)):
+    return [clean_model(row) for row in db.query(ClassRoom).order_by(ClassRoom.id.asc()).all()]
+
+
+@router.post("/classes")
+def create_class(payload: dict, db: Session = Depends(get_db)):
+    code = (payload or {}).get("class_code", "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="class_code is required")
+    row = db.query(ClassRoom).filter(ClassRoom.class_code == code).first()
+    if not row:
+        row = ClassRoom(class_code=code)
+        db.add(row)
+    row.class_name = payload.get("class_name", code)
+    row.teacher_user_id_optional = int(payload.get("teacher_user_id_optional") or 0)
+    db.commit()
+    db.refresh(row)
+    return clean_model(row)
+
+
+@router.get("/groups")
+def list_groups(db: Session = Depends(get_db)):
+    return [clean_model(row) for row in db.query(LearnerGroup).order_by(LearnerGroup.id.asc()).all()]
+
+
+@router.post("/groups")
+def create_group(payload: dict, db: Session = Depends(get_db)):
+    code = (payload or {}).get("group_code", "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="group_code is required")
+    row = db.query(LearnerGroup).filter(LearnerGroup.group_code == code).first()
+    if not row:
+        row = LearnerGroup(group_code=code)
+        db.add(row)
+    row.class_id = int(payload.get("class_id") or 0)
+    row.group_name = payload.get("group_name", code)
+    db.commit()
+    db.refresh(row)
+    return clean_model(row)
+
+
+@router.get("/student/tasks")
+def student_tasks(user_code: str = "", db: Session = Depends(get_db)):
+    user = _user_by_code(db, user_code) if user_code else None
+    if user_code and (not user or user.role != "student"):
+        raise HTTPException(status_code=403, detail="Student role required")
+    return list_tasks(False, db)
+
+
+@router.get("/student/feedback")
+def student_feedback(user_code: str, db: Session = Depends(get_db)):
+    user = _user_by_code(db, user_code)
+    if not user or user.role != "student":
+        raise HTTPException(status_code=403, detail="Student role required")
+    participant_id = _participant_id_for_user(user)
+    attempts = [_attempt_with_task(db, attempt) for attempt in db.query(Attempt).filter(Attempt.participant_id == participant_id).order_by(Attempt.created_at.desc()).all()]
+    teacher_feedback = [clean_model(row) for row in db.query(TeacherFeedback).filter(TeacherFeedback.participant_id == participant_id, TeacherFeedback.status == "released").all()]
+    peer_feedback = [clean_model(row) for row in db.query(PeerFeedback).filter(PeerFeedback.participant_id == participant_id).all()]
+    return {"ai_feedback": attempts, "teacher_feedback": teacher_feedback, "peer_feedback": peer_feedback}
+
+
+@router.get("/student/progress")
+def student_progress(user_code: str, db: Session = Depends(get_db)):
+    user = _user_by_code(db, user_code)
+    if not user or user.role != "student":
+        raise HTTPException(status_code=403, detail="Student role required")
+    attempts = db.query(Attempt).filter(Attempt.participant_id == user.user_code).order_by(Attempt.created_at.asc()).all()
+    latest_score = _attempt_score(attempts[-1]) if attempts else None
+    return {
+        "attempt_count": len(attempts),
+        "tasks_practiced": len({attempt.task_id for attempt in attempts}),
+        "feedback_views": db.query(FeedbackView).filter(FeedbackView.participant_id == user.user_code).count(),
+        "revisions": db.query(RevisionEvent).filter(RevisionEvent.participant_id == user.user_code).count(),
+        "latest_score": latest_score,
+    }
+
+
+@router.get("/attempts/{attempt_id}/audio")
+def attempt_audio(attempt_id: int, db: Session = Depends(get_db)):
+    attempt = db.query(Attempt).filter(Attempt.id == attempt_id).first()
+    if not attempt:
+        raise HTTPException(status_code=404, detail="Attempt not found")
+    path = Path(attempt.audio_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Audio file not found")
+    return FileResponse(path, filename=path.name)
+
+
+@router.get("/teacher/classes")
+def teacher_classes(user_code: str = "", db: Session = Depends(get_db)):
+    user = _user_by_code(db, user_code) if user_code else None
+    query = db.query(ClassRoom)
+    if user and user.role == "teacher":
+        query = query.filter(ClassRoom.teacher_user_id_optional == user.id)
+    return [clean_model(row) for row in query.order_by(ClassRoom.id.asc()).all()]
+
+
+@router.get("/teacher/submissions")
+def teacher_submissions(user_code: str = "", db: Session = Depends(get_db)):
+    user = _user_by_code(db, user_code) if user_code else None
+    query = db.query(Attempt).order_by(Attempt.created_at.desc())
+    if user and user.role == "teacher":
+        student_codes = [u.user_code for u in db.query(User).filter(User.role == "student", User.class_id == user.class_id).all()]
+        query = query.filter(Attempt.participant_id.in_(student_codes or ["__none__"]))
+    return [_attempt_with_task(db, attempt) for attempt in query.limit(200).all()]
+
+
+@router.post("/teacher/feedback")
+def create_teacher_feedback(payload: dict, db: Session = Depends(get_db)):
+    feedback = TeacherFeedback(
+        teacher_user_id=int(payload.get("teacher_user_id") or 0),
+        participant_id=payload.get("participant_id", ""),
+        task_id=int(payload.get("task_id") or 0),
+        attempt_id=int(payload.get("attempt_id") or 0),
+        pronunciation_rating=float(payload.get("pronunciation_rating") or 0),
+        fluency_rating=float(payload.get("fluency_rating") or 0),
+        comprehensibility_rating=float(payload.get("comprehensibility_rating") or 0),
+        target_word=payload.get("target_word", ""),
+        target_phoneme=payload.get("target_phoneme", ""),
+        observed_phoneme=payload.get("observed_phoneme", ""),
+        comment=payload.get("comment", ""),
+        action_guidance=payload.get("action_guidance", ""),
+        status=payload.get("status", "draft"),
+    )
+    db.add(feedback)
+    db.commit()
+    db.refresh(feedback)
+    return clean_model(feedback)
+
+
+@router.put("/teacher/feedback/{feedback_id}")
+def update_teacher_feedback(feedback_id: int, payload: dict, db: Session = Depends(get_db)):
+    feedback = db.query(TeacherFeedback).filter(TeacherFeedback.id == feedback_id).first()
+    if not feedback:
+        raise HTTPException(status_code=404, detail="Teacher feedback not found")
+    for key in ["participant_id", "target_word", "target_phoneme", "observed_phoneme", "comment", "action_guidance", "status"]:
+        if key in payload:
+            setattr(feedback, key, payload[key])
+    for key in ["pronunciation_rating", "fluency_rating", "comprehensibility_rating"]:
+        if key in payload:
+            setattr(feedback, key, float(payload[key] or 0))
+    db.commit()
+    return clean_model(feedback)
+
+
+@router.post("/teacher/feedback/{feedback_id}/release")
+def release_teacher_feedback(feedback_id: int, db: Session = Depends(get_db)):
+    feedback = db.query(TeacherFeedback).filter(TeacherFeedback.id == feedback_id).first()
+    if not feedback:
+        raise HTTPException(status_code=404, detail="Teacher feedback not found")
+    feedback.status = "released"
+    feedback.released_at = datetime.utcnow()
+    if feedback.observed_phoneme or feedback.target_phoneme:
+        db.add(PronunciationEvidence(
+            participant_id=feedback.participant_id,
+            task_id=feedback.task_id,
+            attempt_id=feedback.attempt_id,
+            source_name="teacher_feedback",
+            evidence_level="human_validated_diagnosis",
+            score_level="phoneme",
+            target_word=feedback.target_word,
+            target_phoneme=feedback.target_phoneme,
+            observed_phoneme=feedback.observed_phoneme or None,
+            score=feedback.pronunciation_rating,
+            confidence=1.0,
+            issue_type="teacher_observed_pronunciation",
+            notes=feedback.comment,
+        ))
+    db.commit()
+    return clean_model(feedback)
+
+
+@router.get("/teacher/class-review")
+def teacher_class_review(user_code: str = "", db: Session = Depends(get_db)):
+    submissions = teacher_submissions(user_code, db)
+    needs_review = [row for row in submissions if row.get("score") is None or float(row.get("score") or 0) < 70]
+    return {"submissions": submissions[:50], "needs_review": needs_review[:50], "recommended_action": "Review low-score or invalid-audio attempts first."}
+
+
+@router.get("/teacher/class-summary")
+def teacher_class_summary(user_code: str = "", db: Session = Depends(get_db)):
+    submissions = teacher_submissions(user_code, db)
+    scores = [row["score"] for row in submissions if row.get("score") is not None]
+    return {
+        "students": len({row["participant_id"] for row in submissions}),
+        "attempts": len(submissions),
+        "average_score": round(sum(scores) / len(scores), 2) if scores else None,
+        "teacher_feedback_released": db.query(TeacherFeedback).filter(TeacherFeedback.status == "released").count(),
+    }
+
+
+@router.get("/peer/review-tasks")
+def peer_review_tasks(user_code: str, db: Session = Depends(get_db)):
+    user = _user_by_code(db, user_code)
+    if not user or user.role != "peer_reviewer":
+        raise HTTPException(status_code=403, detail="Peer reviewer role required")
+    rows = db.query(PeerReviewAssignment).filter(PeerReviewAssignment.reviewer_user_id == user.id).order_by(PeerReviewAssignment.created_at.desc()).all()
+    if not rows:
+        latest = db.query(Attempt).filter(Attempt.participant_id != user.user_code).order_by(Attempt.created_at.desc()).first()
+        if latest:
+            assignment = PeerReviewAssignment(reviewer_user_id=user.id, participant_id=latest.participant_id, task_id=latest.task_id, attempt_id=latest.id)
+            db.add(assignment)
+            db.commit()
+            rows = [assignment]
+    result = []
+    for row in rows:
+        data = clean_model(row)
+        attempt = db.query(Attempt).filter(Attempt.id == row.attempt_id).first()
+        data["attempt"] = _attempt_with_task(db, attempt) if attempt else None
+        result.append(data)
+    return result
+
+
+@router.post("/peer/feedback")
+def create_peer_feedback(payload: dict, db: Session = Depends(get_db)):
+    feedback = PeerFeedback(
+        assignment_id=int(payload.get("assignment_id") or 0),
+        reviewer_user_id=int(payload.get("reviewer_user_id") or 0),
+        participant_id=payload.get("participant_id", ""),
+        task_id=int(payload.get("task_id") or 0),
+        attempt_id=int(payload.get("attempt_id") or 0),
+        clarity_rating=float(payload.get("clarity_rating") or 0),
+        encouragement=payload.get("encouragement", ""),
+        suggestion=payload.get("suggestion", ""),
+    )
+    db.add(feedback)
+    assignment = db.query(PeerReviewAssignment).filter(PeerReviewAssignment.id == feedback.assignment_id).first()
+    if assignment:
+        assignment.status = "submitted"
+    db.commit()
+    db.refresh(feedback)
+    return clean_model(feedback)
+
+
+@router.get("/peer/submitted-reviews")
+def peer_submitted_reviews(user_code: str, db: Session = Depends(get_db)):
+    user = _user_by_code(db, user_code)
+    if not user or user.role != "peer_reviewer":
+        raise HTTPException(status_code=403, detail="Peer reviewer role required")
+    return [clean_model(row) for row in db.query(PeerFeedback).filter(PeerFeedback.reviewer_user_id == user.id).order_by(PeerFeedback.created_at.desc()).all()]
+
+
+@router.post("/tasks/{task_id}/generate-tts")
+def generate_task_tts(task_id: int, payload: dict = None, db: Session = Depends(get_db)):
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    task.model_audio_source = "tts"
+    task.tts_voice = (payload or {}).get("tts_voice", "browser-default")
+    task.tts_status = "browser_only"
+    task.tts_sentence_audio_path = ""
+    task.tts_focus_word_audio_json = json.dumps({})
+    db.commit()
+    return {"task_id": task.id, "tts_status": task.tts_status, "tts_voice": task.tts_voice, "message": "Backend TTS cache is unavailable; browser SpeechSynthesis reference voice will be used."}
+
+
+@router.post("/tasks/{task_id}/model-audio")
+def upload_model_audio(task_id: int, audio: UploadFile = File(...), db: Session = Depends(get_db)):
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    folder = AUDIO_DIR / "model_audio" / str(task_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    ext = Path(audio.filename or "model.wav").suffix or ".wav"
+    path = folder / ("sentence%s" % ext)
+    with path.open("wb") as f:
+        shutil.copyfileobj(audio.file, f)
+    task.model_audio_source = "uploaded"
+    task.uploaded_sentence_audio_path_optional = str(path)
+    task.model_audio_path = str(path)
+    db.commit()
+    return {"ok": True, "model_audio_source": "uploaded", "audio_url": "/api/tasks/%s/model-audio" % task_id}
+
+
+@router.get("/tasks/{task_id}/model-audio")
+def task_model_audio(task_id: int, db: Session = Depends(get_db)):
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    path = Path(task.uploaded_sentence_audio_path_optional or task.tts_sentence_audio_path or "")
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="No cached model audio; use browser SpeechSynthesis fallback")
+    return FileResponse(path, filename=path.name)
+
+
+@router.get("/tasks/{task_id}/focus-word-audio")
+def task_focus_word_audio(task_id: int, word: str = "", db: Session = Depends(get_db)):
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    audio_map = _json(task.uploaded_focus_word_audio_json_optional or task.tts_focus_word_audio_json, "{}")
+    path = Path(audio_map.get(word, ""))
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="No cached focus-word audio; use browser SpeechSynthesis fallback")
+    return FileResponse(path, filename=path.name)
+
+
+@router.get("/system/status")
+def system_status(db: Session = Depends(get_db)):
+    return {
+        "status": "ok",
+        "backend": health(),
+        "users": db.query(User).count(),
+        "tasks": db.query(Task).count(),
+        "attempts": db.query(Attempt).count(),
+        "teacher_feedback": db.query(TeacherFeedback).count(),
+        "peer_feedback": db.query(PeerFeedback).count(),
+        "visible_feature_rule": "Only role-scoped pilot features are shown in normal UI.",
+    }
+
+
 @router.post("/participants", response_model=ParticipantRead)
 def create_participant(payload: ParticipantCreate, db: Session = Depends(get_db)):
     condition_key = normalize_condition(payload.group_id)
@@ -406,6 +838,13 @@ def create_task(payload: TaskCreate, db: Session = Depends(get_db)):
         speaking_target=payload.speaking_target,
         difficulty=payload.difficulty,
         model_audio_path=payload.model_audio_path,
+        model_audio_source=payload.model_audio_source,
+        tts_sentence_audio_path=payload.tts_sentence_audio_path,
+        tts_focus_word_audio_json=json.dumps(payload.tts_focus_word_audio_json),
+        uploaded_sentence_audio_path_optional=payload.uploaded_sentence_audio_path_optional,
+        uploaded_focus_word_audio_json_optional=json.dumps(payload.uploaded_focus_word_audio_json_optional),
+        tts_voice=payload.tts_voice,
+        tts_status=payload.tts_status,
         feedback_allowed=payload.feedback_allowed,
         revision_allowed=payload.revision_allowed,
         active=payload.active,
@@ -431,6 +870,10 @@ def update_task(task_id: int, payload: TaskCreate, db: Session = Depends(get_db)
             task.word_phoneme_map_json = json.dumps(value)
         elif key == "issue_types":
             task.issue_types_json = json.dumps(value)
+        elif key == "tts_focus_word_audio_json":
+            task.tts_focus_word_audio_json = json.dumps(value)
+        elif key == "uploaded_focus_word_audio_json_optional":
+            task.uploaded_focus_word_audio_json_optional = json.dumps(value)
         else:
             setattr(task, key, value)
     db.commit()
@@ -1089,18 +1532,31 @@ def export_full(db: Session = Depends(get_db)):
     path = EXPORT_DIR / ("full_research_export_%s.zip" % datetime.utcnow().strftime("%Y%m%d_%H%M%S"))
     export_sets = {
         "participants.csv": [clean_model(p) for p in db.query(Participant).all()],
+        "users.csv": [clean_model(row) for row in db.query(User).all()],
+        "classes.csv": [clean_model(row) for row in db.query(ClassRoom).all()],
+        "groups.csv": [clean_model(row) for row in db.query(LearnerGroup).all()],
         "studies.csv": [clean_model(s) for s in db.query(Study).all()],
         "conditions.csv": [clean_model(c) for c in db.query(Condition).all()],
         "tasks.csv": [clean_model(t) for t in db.query(Task).all()],
+        "tts_audio_status.csv": [{
+            "task_id": task.id,
+            "model_audio_source": getattr(task, "model_audio_source", "tts"),
+            "tts_status": getattr(task, "tts_status", "browser_only"),
+            "tts_voice": getattr(task, "tts_voice", "browser-default"),
+        } for task in db.query(Task).all()],
         "attempts.csv": [_attempt_to_dict(db, a) for a in db.query(Attempt).all()],
         "pronunciation_evidence.csv": [clean_model(row) for row in db.query(PronunciationEvidence).all()],
         "diagnosis_records.csv": [clean_model(row) for row in db.query(DiagnosisRecord).all()],
         "feedback_items.csv": [clean_model(f) for f in db.query(FeedbackItem).all()],
+        "teacher_feedback.csv": [clean_model(row) for row in db.query(TeacherFeedback).all()],
+        "peer_feedback.csv": [clean_model(row) for row in db.query(PeerFeedback).all()],
         "feedback_views.csv": [clean_model(v) for v in db.query(FeedbackView).all()],
         "revision_events.csv": [clean_model(r) for r in db.query(RevisionEvent).all()],
         "learner_states.csv": [clean_model(s) for s in db.query(LearnerState).all()],
+        "learner_progress.csv": [{"user_code": user.user_code, **student_progress(user.user_code, db)} for user in db.query(User).filter(User.role == "student").all()],
         "annotations.csv": [clean_model(a) for a in db.query(Annotation).all()],
         "teacher_orchestration_events.csv": [clean_model(row) for row in db.query(TeacherOrchestrationEvent).all()],
+        "peer_review_assignments.csv": [clean_model(row) for row in db.query(PeerReviewAssignment).all()],
         "external_assessment_scores.csv": [clean_model(row) for row in db.query(ExternalAssessmentScore).all()],
         "system_versions.csv": [clean_model(row) for row in db.query(SystemVersion).all()],
     }
@@ -1121,8 +1577,80 @@ def export_tasks(db: Session = Depends(get_db)):
     return _write_csv(db, "tasks", [clean_model(t) for t in db.query(Task).all()])
 
 
+@router.get("/exports/users")
+def export_users(db: Session = Depends(get_db)):
+    return _write_csv(db, "users", [clean_model(row) for row in db.query(User).all()])
+
+
+@router.get("/exports/classes")
+def export_classes(db: Session = Depends(get_db)):
+    return _write_csv(db, "classes", [clean_model(row) for row in db.query(ClassRoom).all()])
+
+
+@router.get("/exports/groups")
+def export_groups(db: Session = Depends(get_db)):
+    return _write_csv(db, "groups", [clean_model(row) for row in db.query(LearnerGroup).all()])
+
+
+@router.get("/exports/tts-audio-status")
+def export_tts_audio_status(db: Session = Depends(get_db)):
+    rows = [{
+        "task_id": task.id,
+        "task_code": task.task_code,
+        "model_audio_source": getattr(task, "model_audio_source", "tts"),
+        "tts_sentence_audio_path": getattr(task, "tts_sentence_audio_path", ""),
+        "tts_focus_word_audio_json": getattr(task, "tts_focus_word_audio_json", "{}"),
+        "uploaded_sentence_audio_path_optional": getattr(task, "uploaded_sentence_audio_path_optional", ""),
+        "uploaded_focus_word_audio_json_optional": getattr(task, "uploaded_focus_word_audio_json_optional", "{}"),
+        "tts_voice": getattr(task, "tts_voice", "browser-default"),
+        "tts_status": getattr(task, "tts_status", "browser_only"),
+    } for task in db.query(Task).all()]
+    return _write_csv(db, "tts_audio_status", rows)
+
+
+@router.get("/exports/ai-feedback")
+def export_ai_feedback(db: Session = Depends(get_db)):
+    return _write_csv(db, "ai_feedback", [clean_model(row) for row in db.query(FeedbackItem).all()])
+
+
+@router.get("/exports/teacher-feedback")
+def export_teacher_feedback(db: Session = Depends(get_db)):
+    return _write_csv(db, "teacher_feedback", [clean_model(row) for row in db.query(TeacherFeedback).all()])
+
+
+@router.get("/exports/peer-feedback")
+def export_peer_feedback(db: Session = Depends(get_db)):
+    return _write_csv(db, "peer_feedback", [clean_model(row) for row in db.query(PeerFeedback).all()])
+
+
+@router.get("/exports/feedback-views")
+def export_feedback_views(db: Session = Depends(get_db)):
+    return _write_csv(db, "feedback_views", [clean_model(row) for row in db.query(FeedbackView).all()])
+
+
+@router.get("/exports/learner-progress")
+def export_learner_progress(db: Session = Depends(get_db)):
+    rows = []
+    for user in db.query(User).filter(User.role == "student").all():
+        progress = student_progress(user.user_code, db)
+        rows.append({"user_code": user.user_code, **progress})
+    return _write_csv(db, "learner_progress", rows)
+
+
+@router.get("/exports/peer-review-assignments")
+def export_peer_review_assignments(db: Session = Depends(get_db)):
+    return _write_csv(db, "peer_review_assignments", [clean_model(row) for row in db.query(PeerReviewAssignment).all()])
+
+
+@router.get("/exports/all")
+def export_all(db: Session = Depends(get_db)):
+    return export_full(db)
+
+
 def clean_model(model):
-    data = dict(model.__dict__)
+    if hasattr(model, "__table__"):
+        return {column.name: getattr(model, column.name) for column in model.__table__.columns}
+    data = dict(getattr(model, "__dict__", {}))
     data.pop("_sa_instance_state", None)
     return data
 

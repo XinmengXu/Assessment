@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class ParticipantCreate(BaseModel):
@@ -19,6 +19,8 @@ class ParticipantRead(ParticipantCreate):
 
 
 class TaskBase(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     task_code: str = ""
     task_type: str = "practice"
     target_text: str
@@ -29,6 +31,13 @@ class TaskBase(BaseModel):
     speaking_target: str = ""
     difficulty: str = "medium"
     model_audio_path: str = ""
+    model_audio_source: str = "tts"
+    tts_sentence_audio_path: str = ""
+    tts_focus_word_audio_json: Dict[str, str] = {}
+    uploaded_sentence_audio_path_optional: str = ""
+    uploaded_focus_word_audio_json_optional: Dict[str, str] = {}
+    tts_voice: str = "browser-default"
+    tts_status: str = "browser_only"
     feedback_allowed: bool = True
     revision_allowed: bool = True
     active: bool = True

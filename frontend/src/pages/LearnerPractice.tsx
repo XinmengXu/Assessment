@@ -1,16 +1,17 @@
 import { useMemo, useRef, useState } from "react";
-import { Mic, Square, Upload, RotateCcw } from "lucide-react";
-import { api, Attempt, getBackendStatus, Task } from "../api/client";
+import { Mic, Square, Upload, RotateCcw, Volume2 } from "lucide-react";
+import { api, Attempt, getBackendStatus, isDemoMode, Task, UserRole } from "../api/client";
 
 type Props = {
   participantId: string;
   groupId: string;
   sessionId: string;
   tasks: Task[];
+  userRole?: UserRole;
   onAttempt: (attempt: Attempt) => void;
 };
 
-export function LearnerPractice({ participantId, groupId, sessionId, tasks, onAttempt }: Props) {
+export function LearnerPractice({ participantId, groupId, sessionId, tasks, userRole = "student", onAttempt }: Props) {
   const [taskId, setTaskId] = useState<number>(tasks[0]?.id || 1);
   const [recording, setRecording] = useState(false);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
@@ -64,7 +65,7 @@ export function LearnerPractice({ participantId, groupId, sessionId, tasks, onAt
     data.append("group_id", groupId);
     data.append("session_id", sessionId);
     data.append("task_id", String(task.id));
-    data.append("transcript_hint", transcriptHint);
+    if (isDemoMode()) data.append("transcript_hint", transcriptHint);
     data.append("audio", audioBlob, audioName);
     try {
       const result = await api<Attempt>("/attempts/analyze", { method: "POST", body: data });
@@ -103,9 +104,8 @@ export function LearnerPractice({ participantId, groupId, sessionId, tasks, onAt
           <article className="sentence-card">
             <span>{task.speaking_target}</span>
             <h3>{task.target_text}</h3>
-            <p>Task type: {task.task_type || "practice"} - Revision {task.revision_allowed === false ? "not allowed" : "allowed"} - Feedback {task.feedback_allowed === false ? "hidden" : "available"}</p>
             <p>Focus: {task.focus_words.join(", ") || "general intelligibility"}</p>
-            {task.issue_types?.length ? <p>Issue focus: {task.issue_types.join(", ")}</p> : null}
+            <TtsControls sentence={task.target_text} focusWords={task.focus_words} ttsStatus={task.tts_status || "browser_only"} />
           </article>
         )}
 
@@ -126,15 +126,18 @@ export function LearnerPractice({ participantId, groupId, sessionId, tasks, onAt
           </label>
           {audioBlob && <span className="status-text">Audio ready: {audioName}</span>}
         </div>
+        {audioBlob && <audio controls src={URL.createObjectURL(audioBlob)} />}
 
-        <label>
-          Mock ASR transcript hint
-          <textarea
-            value={transcriptHint}
-            onChange={(event) => setTranscriptHint(event.target.value)}
-            placeholder="Optional in mock mode. Leave blank to simulate no recognized words."
-          />
-        </label>
+        {isDemoMode() && (
+          <label>
+            Demo transcript hint
+            <textarea
+              value={transcriptHint}
+              onChange={(event) => setTranscriptHint(event.target.value)}
+              placeholder="Demo mode cannot analyze audio. Optional text here only simulates the workflow."
+            />
+          </label>
+        )}
 
         <button className="primary submit" disabled={busy} onClick={submit}>
           <RotateCcw size={18} />
@@ -145,9 +148,23 @@ export function LearnerPractice({ participantId, groupId, sessionId, tasks, onAt
 
       <div>
         <FeedbackPanel attempt={attempt} groupId={groupId} />
-        <DebugPanel attempt={attempt} audioBlob={audioBlob} audioName={audioName} />
+        {userRole === "researcher_admin" ? <DebugPanel attempt={attempt} audioBlob={audioBlob} audioName={audioName} /> : null}
       </div>
     </section>
+  );
+}
+
+function TtsControls({ sentence, focusWords, ttsStatus }: { sentence: string; focusWords: string[]; ttsStatus: string }) {
+  function speak(text: string) {
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+  }
+  return (
+    <div className="actions tts-row">
+      <button className="file-button" onClick={() => speak(sentence)}><Volume2 size={18} /> Play model sentence</button>
+      {focusWords.map((word) => <button className="file-button" key={word} onClick={() => speak(word)}><Volume2 size={18} /> Play {word}</button>)}
+      {ttsStatus === "browser_only" ? <span className="small-note">Browser-generated reference voice</span> : null}
+    </div>
   );
 }
 

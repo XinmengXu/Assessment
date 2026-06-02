@@ -79,6 +79,43 @@ nav button.active, nav button:hover {
 
 main { padding: 26px; }
 
+.login-screen {
+  min-height: 100vh;
+  max-width: 760px;
+  margin: 0 auto;
+  padding-top: 8vh;
+}
+
+.login-panel {
+  margin-top: 18px;
+}
+
+.user-card {
+  border: 1px solid #4e5e65;
+  border-radius: 8px;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.user-card span {
+  color: #c8d3d7;
+  font-size: 13px;
+}
+
+.user-card button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 8px;
+  background: #3c4b52;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
 .demo-banner {
   background: #fff3cd;
   color: #4d3800;
@@ -213,6 +250,27 @@ h2 { font-size: 24px; }
   flex-wrap: wrap;
   gap: 12px;
   align-items: end;
+}
+
+.stack {
+  display: grid;
+  gap: 16px;
+}
+
+.export-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.tts-row {
+  margin-top: 14px;
+}
+
+audio {
+  width: 100%;
+  margin: 12px 0;
 }
 
 .primary, .button-link {

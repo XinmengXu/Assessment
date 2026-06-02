@@ -35,10 +35,30 @@ export type Task = {
   speaking_target: string;
   difficulty: string;
   model_audio_path: string;
+  model_audio_source?: "tts" | "uploaded" | "missing";
+  tts_sentence_audio_path?: string;
+  tts_focus_word_audio_json?: Record<string, string>;
+  uploaded_sentence_audio_path_optional?: string;
+  uploaded_focus_word_audio_json_optional?: Record<string, string>;
+  tts_voice?: string;
+  tts_status?: "generated" | "pending" | "failed" | "browser_only";
   feedback_allowed?: boolean;
   revision_allowed?: boolean;
   active?: boolean;
   created_at: string;
+};
+
+export type UserRole = "student" | "teacher" | "peer_reviewer" | "researcher_admin";
+
+export type PilotUser = {
+  id: number;
+  user_code: string;
+  role: UserRole;
+  display_name: string;
+  class_id: number;
+  group_id: number;
+  active: boolean;
+  created_at?: string;
 };
 
 export type Attempt = {
@@ -48,6 +68,7 @@ export type Attempt = {
   group_id: string;
   attempt_number: number;
   audio_path?: string;
+  audio_url?: string;
   asr_adapter?: string;
   asr_transcript: string;
   duration_seconds: number;
@@ -127,6 +148,9 @@ const defaultTasks: Task[] = [
   speaking_target: speaking_target as string,
   difficulty: difficulty as string,
   model_audio_path: "",
+  model_audio_source: "tts",
+  tts_voice: "browser-default",
+  tts_status: "browser_only",
   created_at: new Date().toISOString(),
 }));
 
@@ -152,6 +176,11 @@ export function exportUrl(path: string) {
   if (!shouldUseDemoFallback()) return `${API_BASE}${path}`;
   const rows = path.startsWith("/exports/tasks") ? taskRows() : attemptRows(path);
   return csvDataUrl(rows);
+}
+
+export function apiAssetUrl(path: string) {
+  if (path.startsWith("http")) return path;
+  return `${API_BASE}${path.startsWith("/api/") ? path.slice(4) : path}`;
 }
 
 function shouldUseDemoFallback() {
@@ -210,6 +239,21 @@ function setDemoStatus(reason: string) {
 async function demoApi<T>(path: string, init?: RequestInit): Promise<T> {
   await new Promise((resolve) => window.setTimeout(resolve, 160));
   if (path === "/health") return getBackendStatus() as T;
+  if (path === "/login" && init?.method === "POST") return demoLogin(init) as T;
+  if (path.startsWith("/me")) return demoUserFromPath(path) as T;
+  if (path === "/users" && init?.method === "POST") return demoUser() as T;
+  if (path === "/users") return demoUsers() as T;
+  if (path === "/classes") return [{ id: 1, class_code: "DEMO", class_name: "Demo Class", teacher_user_id_optional: 2 }] as T;
+  if (path === "/groups") return [{ id: 1, group_code: "DEMO-G", class_id: 1, group_name: "Demo Group" }] as T;
+  if (path.startsWith("/student/tasks")) return getTasks() as T;
+  if (path.startsWith("/student/feedback")) return { ai_feedback: getAttempts(), teacher_feedback: [], peer_feedback: [] } as T;
+  if (path.startsWith("/student/progress")) return { attempt_count: getAttempts().length, tasks_practiced: new Set(getAttempts().map((item) => item.task_id)).size, feedback_views: 0, revisions: 0, latest_score: null } as T;
+  if (path.startsWith("/teacher/submissions") || path.startsWith("/teacher/class-review")) return { submissions: getAttempts(), needs_review: getAttempts(), recommended_action: "Demo mode cannot verify speech. Connect the backend for real review." } as T;
+  if (path.startsWith("/teacher/class-summary")) return { students: 1, attempts: getAttempts().length, average_score: null, teacher_feedback_released: 0 } as T;
+  if (path.startsWith("/peer/review-tasks")) return [] as T;
+  if (path.startsWith("/peer/submitted-reviews")) return [] as T;
+  if (path.startsWith("/system/status")) return { status: "demo", backend: getBackendStatus(), users: 4, tasks: getTasks().length, attempts: getAttempts().length, teacher_feedback: 0, peer_feedback: 0 } as T;
+  if (path.includes("/generate-tts")) return { tts_status: "browser_only", message: "Browser SpeechSynthesis reference voice will be used." } as T;
   if (path === "/tasks" && !init?.method) return getTasks() as T;
   if (path === "/tasks" && init?.method === "POST") return createTask(init) as T;
   if (path.startsWith("/tasks/") && init?.method === "PUT") return updateTask(path, init) as T;
@@ -233,6 +277,30 @@ function getTasks() {
     return defaultTasks;
   }
   return JSON.parse(raw) as Task[];
+}
+
+function demoUser(): PilotUser {
+  return { id: 1, user_code: "student001", role: "student", display_name: "Demo Student", class_id: 1, group_id: 1, active: true };
+}
+
+function demoUsers(): PilotUser[] {
+  return [
+    demoUser(),
+    { id: 2, user_code: "teacher001", role: "teacher", display_name: "Demo Teacher", class_id: 1, group_id: 1, active: true },
+    { id: 3, user_code: "peer001", role: "peer_reviewer", display_name: "Demo Peer Reviewer", class_id: 1, group_id: 1, active: true },
+    { id: 4, user_code: "admin001", role: "researcher_admin", display_name: "Demo Admin", class_id: 1, group_id: 1, active: true },
+  ];
+}
+
+function demoLogin(init: RequestInit) {
+  const body = JSON.parse(String(init.body || "{}"));
+  const user = demoUsers().find((item) => item.user_code === body.user_code) || demoUser();
+  return { user, token_type: "demo_user_code" };
+}
+
+function demoUserFromPath(path: string) {
+  const code = new URL(path, window.location.origin).searchParams.get("user_code") || "student001";
+  return demoUsers().find((item) => item.user_code === code) || demoUser();
 }
 
 function demoConditions() {

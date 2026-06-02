@@ -1,22 +1,71 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { BarChart3, BookOpen, ClipboardCheck, ClipboardList, FlaskConical, History, ShieldCheck } from "lucide-react";
-import { api, Attempt, BackendStatus, checkBackendHealth, getBackendStatus, Task } from "./api/client";
+import {
+  BarChart3,
+  BookOpen,
+  ClipboardCheck,
+  ClipboardList,
+  Database,
+  Gauge,
+  LogOut,
+  ShieldCheck,
+  Users,
+} from "lucide-react";
+import { api, apiAssetUrl, Attempt, BackendStatus, checkBackendHealth, exportUrl, getBackendStatus, PilotUser, Task, UserRole } from "./api/client";
 import { LearnerPractice } from "./pages/LearnerPractice";
-import { AttemptHistory } from "./pages/AttemptHistory";
-import { Dashboard } from "./pages/Dashboard";
 import { TaskManagement } from "./pages/TaskManagement";
-import { AnnotationReview } from "./pages/AnnotationReview";
 import { StudyDesign } from "./pages/StudyDesign";
 import "./styles.css";
 
-type Page = "practice" | "history" | "dashboard" | "tasks" | "annotations" | "study";
+type Page =
+  | "practice"
+  | "my-feedback"
+  | "my-progress"
+  | "give-feedback"
+  | "class-review"
+  | "class-summary"
+  | "peer-tasks"
+  | "submitted-reviews"
+  | "study-setup"
+  | "task-bank"
+  | "users-groups"
+  | "data-export"
+  | "system-status";
+
+const DEFAULT_PAGE: Record<UserRole, Page> = {
+  student: "practice",
+  teacher: "give-feedback",
+  peer_reviewer: "peer-tasks",
+  researcher_admin: "study-setup",
+};
+
+const roleNav = {
+  student: [
+    ["practice", BookOpen, "Practice"],
+    ["my-feedback", ClipboardCheck, "My Feedback"],
+    ["my-progress", BarChart3, "My Progress"],
+  ],
+  teacher: [
+    ["give-feedback", ClipboardCheck, "Give Feedback"],
+    ["class-review", ClipboardList, "Class Review"],
+    ["class-summary", BarChart3, "Class Summary"],
+  ],
+  peer_reviewer: [
+    ["peer-tasks", ClipboardCheck, "Peer Review Tasks"],
+    ["submitted-reviews", ClipboardList, "Submitted Reviews"],
+  ],
+  researcher_admin: [
+    ["study-setup", ShieldCheck, "Study Setup"],
+    ["task-bank", ClipboardList, "Task Bank"],
+    ["users-groups", Users, "Users and Groups"],
+    ["data-export", Database, "Data Export"],
+    ["system-status", Gauge, "System Status"],
+  ],
+} as const;
 
 function App() {
+  const [user, setUser] = useState<PilotUser | null>(null);
   const [page, setPage] = useState<Page>("practice");
-  const [participantId, setParticipantId] = useState(localStorage.getItem("participantId") || "sample001");
-  const [groupId, setGroupId] = useState(localStorage.getItem("groupId") || "explainable_word_sound_feedback");
-  const [sessionId, setSessionId] = useState(localStorage.getItem("sessionId") || "pilot-session");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [latestAttempt, setLatestAttempt] = useState<Attempt | null>(null);
   const [backendStatus, setBackendStatus] = useState<BackendStatus>(getBackendStatus());
@@ -24,29 +73,48 @@ function App() {
 
   useEffect(() => {
     checkBackendHealth().then(setBackendStatus);
-    api<Task[]>("/tasks")
-      .then(setTasks)
-      .catch((err) => setError(err.message))
-      .finally(() => setBackendStatus(getBackendStatus()));
+    const stored = localStorage.getItem("pilotUserCode");
+    if (stored) {
+      api<PilotUser>(`/me?user_code=${encodeURIComponent(stored)}`).then((nextUser) => {
+        setUser(nextUser);
+        setPage(DEFAULT_PAGE[nextUser.role]);
+      }).catch(() => localStorage.removeItem("pilotUserCode"));
+    }
+    api<Task[]>("/tasks").then(setTasks).catch((err) => setError(err.message)).finally(() => setBackendStatus(getBackendStatus()));
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem("participantId", participantId);
-    localStorage.setItem("groupId", groupId);
-    localStorage.setItem("sessionId", sessionId);
-  }, [participantId, groupId, sessionId]);
+  const nav = useMemo(() => (user ? roleNav[user.role] : []), [user]);
 
-  const nav = useMemo(
-    () => [
-      ["practice", BookOpen, "Practice"],
-      ["history", History, "History"],
-      ["dashboard", BarChart3, "Dashboard"],
-      ["tasks", ClipboardList, "Tasks"],
-      ["annotations", ClipboardCheck, "Annotations"],
-      ["study", FlaskConical, "Study"],
-    ] as const,
-    [],
-  );
+  async function login(userCode: string) {
+    setError("");
+    try {
+      const result = await api<{ user: PilotUser }>("/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_code: userCode }),
+      });
+      setUser(result.user);
+      setPage(DEFAULT_PAGE[result.user.role]);
+      localStorage.setItem("pilotUserCode", result.user.user_code);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Login failed");
+    }
+  }
+
+  function logout() {
+    localStorage.removeItem("pilotUserCode");
+    setUser(null);
+    setPage("practice");
+  }
+
+  if (!user) {
+    return (
+      <main className="login-screen">
+        <BackendStatusBanner status={backendStatus} />
+        <LoginPanel onLogin={login} error={error} />
+      </main>
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -54,84 +122,249 @@ function App() {
         <div className="brand">
           <ShieldCheck size={28} />
           <div>
-            <h1>Speech Feedback Study</h1>
-            <p>Explainable research prototype</p>
+            <h1>Speech-AI Practice</h1>
+            <p>Formative speaking platform</p>
           </div>
+        </div>
+        <div className="user-card">
+          <strong>{user.display_name}</strong>
+          <span>{roleLabel(user.role)}</span>
+          <button onClick={logout}><LogOut size={16} /> Log out</button>
         </div>
         <nav>
           {nav.map(([id, Icon, label]) => (
-            <button className={page === id ? "active" : ""} key={id} onClick={() => setPage(id)}>
+            <button className={page === id ? "active" : ""} key={id} onClick={() => setPage(id as Page)}>
               <Icon size={18} />
               {label}
             </button>
           ))}
         </nav>
         <section className="privacy-note">
-          <strong>Privacy note</strong>
-          <p>Recordings are stored locally. Use assigned IDs, not real names. Feedback supports learning and research; it is not a high-stakes assessment.</p>
+          <strong>Formative use only</strong>
+          <p>Automatic scores are practice indicators. Teacher ratings are needed for stronger learning-outcome claims.</p>
         </section>
       </aside>
 
       <main>
         <BackendStatusBanner status={backendStatus} />
-        <header className="topbar">
-          <label>
-            Participant ID
-            <input value={participantId} onChange={(event) => setParticipantId(event.target.value)} />
-          </label>
-          <label>
-            Condition
-            <select value={groupId} onChange={(event) => setGroupId(event.target.value)}>
-              <option value="assessment_only">A assessment-only</option>
-              <option value="transcript_only">B transcript-only</option>
-              <option value="score_only">C score-only</option>
-              <option value="explainable_word_sound_feedback">D explainable word/sound feedback</option>
-              <option value="adaptive_word_sound_feedback">E adaptive word/sound feedback</option>
-              <option value="human_validated_phoneme_feedback">F human-validated phoneme feedback</option>
-              <option value="teacher_orchestrated_feedback">G teacher-orchestrated feedback</option>
-            </select>
-          </label>
-          <label>
-            Session
-            <input value={sessionId} onChange={(event) => setSessionId(event.target.value)} />
-          </label>
-        </header>
         {error && <div className="alert">{error}</div>}
         {page === "practice" && (
           <LearnerPractice
-            participantId={participantId}
-            groupId={groupId}
-            sessionId={sessionId}
+            participantId={user.user_code}
+            groupId="ai_plus_teacher_feedback"
+            sessionId="pilot-session"
             tasks={tasks}
+            userRole={user.role}
             onAttempt={setLatestAttempt}
           />
         )}
-        {page === "history" && <AttemptHistory participantId={participantId} latestAttempt={latestAttempt} />}
-        {page === "dashboard" && <Dashboard />}
-        {page === "tasks" && <TaskManagement tasks={tasks} onTasks={setTasks} />}
-        {page === "annotations" && <AnnotationReview />}
-        {page === "study" && <StudyDesign />}
+        {page === "my-feedback" && <StudentFeedback user={user} latestAttempt={latestAttempt} />}
+        {page === "my-progress" && <StudentProgress user={user} />}
+        {page === "give-feedback" && <TeacherFeedbackPage user={user} />}
+        {page === "class-review" && <ClassReview user={user} />}
+        {page === "class-summary" && <ClassSummary user={user} />}
+        {page === "peer-tasks" && <PeerReviewTasks user={user} />}
+        {page === "submitted-reviews" && <SubmittedReviews user={user} />}
+        {page === "study-setup" && <StudyDesign />}
+        {page === "task-bank" && <TaskManagement tasks={tasks} onTasks={setTasks} />}
+        {page === "users-groups" && <UsersAndGroups />}
+        {page === "data-export" && <DataExport />}
+        {page === "system-status" && <SystemStatus />}
       </main>
     </div>
   );
 }
 
-function BackendStatusBanner({ status }: { status: BackendStatus }) {
-  if (status.mode === "real") {
-    return (
-      <div className="status-banner real-api">
-        Backend connected: real API mode. ASR adapter: {status.asr_adapter}
+function LoginPanel({ onLogin, error }: { onLogin: (userCode: string) => void; error: string }) {
+  const [userCode, setUserCode] = useState(localStorage.getItem("pilotUserCode") || "student001");
+  return (
+    <section className="panel login-panel">
+      <div className="section-head">
+        <div>
+          <h2>Speech-AI Formative Speaking Practice Platform</h2>
+          <p>Enter your pilot user code. Example accounts: student001, teacher001, peer001, admin001.</p>
+        </div>
       </div>
-    );
-  }
-  if (status.mode === "checking") {
-    return <div className="status-banner checking">Checking backend connection at {status.api_base}</div>;
+      <label>User code<input value={userCode} onChange={(event) => setUserCode(event.target.value)} /></label>
+      <button className="primary submit" onClick={() => onLogin(userCode)}>Log in</button>
+      {error && <div className="alert">{error}</div>}
+    </section>
+  );
+}
+
+function BackendStatusBanner({ status }: { status: BackendStatus }) {
+  if (status.mode === "real") return <div className="status-banner real-api">Backend connected: real API mode. ASR adapter: {status.asr_adapter}</div>;
+  if (status.mode === "checking") return <div className="status-banner checking">Checking backend connection at {status.api_base}</div>;
+  return <div className="demo-banner">Demo mode: no real backend connected. Scores are simulated practice scores only. Audio is accepted only for interface testing. {status.reason}</div>;
+}
+
+function StudentFeedback({ user, latestAttempt }: { user: PilotUser; latestAttempt: Attempt | null }) {
+  const [data, setData] = useState<{ ai_feedback: Attempt[]; teacher_feedback: Record<string, unknown>[]; peer_feedback: Record<string, unknown>[] }>({ ai_feedback: [], teacher_feedback: [], peer_feedback: [] });
+  useEffect(() => { api<typeof data>(`/student/feedback?user_code=${user.user_code}`).then(setData); }, [user.user_code]);
+  const attempts = latestAttempt ? [latestAttempt, ...data.ai_feedback.filter((item) => item.id !== latestAttempt.id)] : data.ai_feedback;
+  return (
+    <section className="stack">
+      <FeedbackList title="AI-supported practice feedback" rows={attempts} />
+      <SimpleRecordList title="Teacher feedback" rows={data.teacher_feedback} empty="Released teacher feedback will appear here." />
+      <SimpleRecordList title="Peer feedback" rows={data.peer_feedback} empty="Peer suggestions will appear here." />
+    </section>
+  );
+}
+
+function StudentProgress({ user }: { user: PilotUser }) {
+  const [progress, setProgress] = useState<Record<string, unknown>>({});
+  useEffect(() => { api<Record<string, unknown>>(`/student/progress?user_code=${user.user_code}`).then(setProgress); }, [user.user_code]);
+  return <MetricsPage title="My Progress" data={progress} />;
+}
+
+function TeacherFeedbackPage({ user }: { user: PilotUser }) {
+  const [rows, setRows] = useState<Attempt[]>([]);
+  useEffect(() => { api<Attempt[]>(`/teacher/submissions?user_code=${user.user_code}`).then(setRows); }, [user.user_code]);
+  return (
+    <section className="stack">
+      <div className="panel"><h2>Give Feedback</h2><p className="muted">Listen to the student recording, compare with the model pronunciation, then draft and release feedback.</p></div>
+      {rows.map((attempt) => <TeacherFeedbackCard key={attempt.id} attempt={attempt} user={user} />)}
+    </section>
+  );
+}
+
+function TeacherFeedbackCard({ attempt, user }: { attempt: Attempt; user: PilotUser }) {
+  const [comment, setComment] = useState("");
+  const [saved, setSaved] = useState("");
+  async function save(release: boolean) {
+    const feedback = await api<Record<string, unknown>>("/teacher/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ teacher_user_id: user.id, participant_id: attempt.participant_id, task_id: attempt.task_id, attempt_id: attempt.id, pronunciation_rating: 3, fluency_rating: 3, comprehensibility_rating: 3, comment, action_guidance: comment, status: release ? "released" : "draft" }),
+    });
+    if (release) await api(`/teacher/feedback/${feedback.id}/release`, { method: "POST" });
+    setSaved(release ? "Released to student" : "Draft saved");
   }
   return (
-    <div className="demo-banner">
-      Demo mode: no real backend connected. Audio is accepted only for interface testing. {status.reason}
-    </div>
+    <article className="panel">
+      <h3>{attempt.target_text}</h3>
+      <TtsButtons sentence={attempt.target_text} focusWords={[]} />
+      <audio controls src={apiAssetUrl(attempt.audio_url || `/attempts/${attempt.id}/audio`)} />
+      <p className="transcript">ASR transcript: {attempt.asr_transcript || "ASR returned empty transcript"}</p>
+      <label>Teacher feedback<textarea value={comment} onChange={(event) => setComment(event.target.value)} /></label>
+      <div className="actions"><button className="file-button" onClick={() => save(false)}>Save draft</button><button className="primary" onClick={() => save(true)}>Release</button>{saved && <span className="status-text">{saved}</span>}</div>
+    </article>
   );
+}
+
+function ClassReview({ user }: { user: PilotUser }) {
+  const [data, setData] = useState<Record<string, unknown>>({});
+  useEffect(() => { api<Record<string, unknown>>(`/teacher/class-review?user_code=${user.user_code}`).then(setData); }, [user.user_code]);
+  return <MetricsPage title="Class Review" data={data} />;
+}
+
+function ClassSummary({ user }: { user: PilotUser }) {
+  const [data, setData] = useState<Record<string, unknown>>({});
+  useEffect(() => { api<Record<string, unknown>>(`/teacher/class-summary?user_code=${user.user_code}`).then(setData); }, [user.user_code]);
+  return <MetricsPage title="Class Summary" data={data} />;
+}
+
+function PeerReviewTasks({ user }: { user: PilotUser }) {
+  const [rows, setRows] = useState<Record<string, unknown>[]>([]);
+  useEffect(() => { api<Record<string, unknown>[]>(`/peer/review-tasks?user_code=${user.user_code}`).then(setRows); }, [user.user_code]);
+  return (
+    <section className="stack">
+      <div className="panel"><h2>Peer Review Tasks</h2><p className="muted">Listen to the model sentence and the student recording, then submit supportive peer feedback.</p></div>
+      {rows.length ? rows.map((row) => <PeerReviewCard key={String(row.id)} row={row} user={user} />) : <div className="panel"><p className="muted">No peer review tasks assigned yet.</p></div>}
+    </section>
+  );
+}
+
+function PeerReviewCard({ row, user }: { row: Record<string, unknown>; user: PilotUser }) {
+  const attempt = row.attempt as Attempt | null;
+  const [encouragement, setEncouragement] = useState("");
+  const [suggestion, setSuggestion] = useState("");
+  const [saved, setSaved] = useState("");
+  if (!attempt) return <article className="panel">Attempt is no longer available.</article>;
+  const reviewAttempt = attempt;
+  async function submit() {
+    await api("/peer/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ assignment_id: row.id, reviewer_user_id: user.id, participant_id: reviewAttempt.participant_id, task_id: reviewAttempt.task_id, attempt_id: reviewAttempt.id, clarity_rating: 3, encouragement, suggestion }),
+    });
+    setSaved("Submitted");
+  }
+  return (
+    <article className="panel">
+      <h3>{attempt.target_text}</h3>
+      <TtsButtons sentence={attempt.target_text} focusWords={[]} />
+      <audio controls src={apiAssetUrl(attempt.audio_url || `/attempts/${attempt.id}/audio`)} />
+      <label>What was clear?<textarea value={encouragement} onChange={(event) => setEncouragement(event.target.value)} /></label>
+      <label>One practice suggestion<textarea value={suggestion} onChange={(event) => setSuggestion(event.target.value)} /></label>
+      <button className="primary submit" onClick={submit}>Submit peer review</button>
+      {saved && <span className="status-text">{saved}</span>}
+    </article>
+  );
+}
+
+function SubmittedReviews({ user }: { user: PilotUser }) {
+  const [rows, setRows] = useState<Record<string, unknown>[]>([]);
+  useEffect(() => { api<Record<string, unknown>[]>(`/peer/submitted-reviews?user_code=${user.user_code}`).then(setRows); }, [user.user_code]);
+  return <SimpleRecordList title="Submitted Reviews" rows={rows} empty="Submitted peer reviews will appear here." />;
+}
+
+function UsersAndGroups() {
+  const [users, setUsers] = useState<PilotUser[]>([]);
+  useEffect(() => { api<PilotUser[]>("/users").then(setUsers); }, []);
+  return <SimpleRecordList title="Users and Groups" rows={users} empty="Create or import users through the backend API." />;
+}
+
+function DataExport() {
+  const exports = ["users", "classes", "groups", "tasks", "tts-audio-status", "attempts", "ai-feedback", "teacher-feedback", "peer-feedback", "feedback-views", "revisions", "learner-progress", "teacher-orchestration-events", "peer-review-assignments", "all"];
+  return (
+    <section className="panel">
+      <h2>Data Export</h2>
+      <div className="export-grid">{exports.map((name) => <a className="button-link" href={exportUrl(`/exports/${name}`)} key={name}>Export {name}</a>)}</div>
+    </section>
+  );
+}
+
+function SystemStatus() {
+  const [data, setData] = useState<Record<string, unknown>>({});
+  useEffect(() => { api<Record<string, unknown>>("/system/status").then(setData); }, []);
+  return <MetricsPage title="System Status" data={data} />;
+}
+
+function FeedbackList({ title, rows }: { title: string; rows: Attempt[] }) {
+  return (
+    <section className="panel">
+      <h2>{title}</h2>
+      {rows.length === 0 ? <p className="muted">No feedback yet.</p> : rows.map((row) => (
+        <article className="feedback-box" key={row.id}>
+          <strong>Task {row.task_id}: {row.score === null ? "no score" : row.score}</strong>
+          <p>{row.target_text}</p>
+          <p>Transcript: {row.asr_transcript || "ASR returned empty transcript"}</p>
+          <p>{String(row.feedback?.comment || row.feedback?.diagnosis || "")}</p>
+        </article>
+      ))}
+    </section>
+  );
+}
+
+function SimpleRecordList({ title, rows, empty }: { title: string; rows: Record<string, unknown>[]; empty: string }) {
+  return <section className="panel"><h2>{title}</h2>{rows.length ? rows.map((row, index) => <pre key={index}>{JSON.stringify(row, null, 2)}</pre>) : <p className="muted">{empty}</p>}</section>;
+}
+
+function MetricsPage({ title, data }: { title: string; data: Record<string, unknown> }) {
+  return <section className="panel"><h2>{title}</h2><pre>{JSON.stringify(data, null, 2)}</pre></section>;
+}
+
+function TtsButtons({ sentence, focusWords }: { sentence: string; focusWords: string[] }) {
+  function speak(text: string) {
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+  }
+  return <div className="actions"><button className="file-button" onClick={() => speak(sentence)}>Play model sentence</button>{focusWords.map((word) => <button className="file-button" key={word} onClick={() => speak(word)}>Play {word}</button>)}</div>;
+}
+
+function roleLabel(role: UserRole) {
+  return role === "peer_reviewer" ? "Peer reviewer" : role === "researcher_admin" ? "Researcher admin" : role[0].toUpperCase() + role.slice(1);
 }
 
 createRoot(document.getElementById("root")!).render(
