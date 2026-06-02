@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -98,7 +100,8 @@ def test_peer_feedback_and_required_exports():
 
 
 def test_frontend_role_nav_hides_research_pages_from_students():
-    main_tsx = open("frontend/src/main.tsx", encoding="utf-8").read()
+    repo_root = Path(__file__).resolve().parents[2]
+    main_tsx = (repo_root / "frontend" / "src" / "main.tsx").read_text(encoding="utf-8")
     student_nav = main_tsx.split("student: [", 1)[1].split("teacher:", 1)[0]
     assert "Practice" in student_nav
     assert "My Feedback" in student_nav
