@@ -284,6 +284,12 @@ h2 { font-size: 24px; }
   color: #7c2527;
 }
 
+.warning-box {
+  border-color: #d9b45f;
+  background: #fff8e8;
+  color: #6c4d11;
+}
+
 .feedback-box p { margin: 8px 0 0; line-height: 1.5; }
 .small-note { font-size: 13px; margin-top: 16px; }
 

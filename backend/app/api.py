@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from .analysis.asr import asr_service
 from .analysis.audio_features import analyze_audio
 from .analysis.feedback_generator import generate_feedback
-from .analysis.scoring import compute_score
+from .analysis.scoring import compute_practice_score
 from .analysis.text_alignment import align_text
 from .config import AUDIO_DIR, EXPORT_DIR
 from .config import ASR_MODE, WHISPER_COMPUTE_TYPE, WHISPER_DEVICE, WHISPER_MODEL_SIZE
@@ -39,6 +39,8 @@ from .services.feedback.feedback_policy import (
     filter_feedback_for_condition,
     normalize_condition,
 )
+from .services.feedback.issue_taxonomy import issue_records_for_alignment
+from .services.asr_sanity import check_asr_sanity
 from .services.learner_model.state_update import update_learner_state
 from .services.validation.agreement import annotation_agreement
 
@@ -73,6 +75,8 @@ def _task_to_schema(task):
 
 def _attempt_score(attempt):
     feedback = _json(attempt.feedback_json, "{}")
+    if feedback.get("no_speech_detected") or feedback.get("valid_audio") is False:
+        return None
     return feedback.get("overall_score") if feedback.get("overall_score") is not None else attempt.assessment_score
 
 
@@ -85,7 +89,8 @@ def _feedback_use_state(db, attempt):
 
 def _attempt_to_dict(db, attempt, base_score=None):
     feedback = _json(attempt.feedback_json, "{}")
-    score = _attempt_score(attempt) or 0
+    score = _attempt_score(attempt)
+    improvement = 0 if score is None or base_score is None else round(score - base_score, 2)
     return {
         "id": attempt.id,
         "participant_id": attempt.participant_id,
@@ -106,11 +111,15 @@ def _attempt_to_dict(db, attempt, base_score=None):
         "substitutions": _json(attempt.substitutions_json, "[]"),
         "issue_types_detected": _json(attempt.issue_types_detected_json, "[]"),
         "long_pause_count": attempt.long_pause_count,
+        "valid_audio": bool(getattr(attempt, "valid_audio", True)),
         "no_speech_detected": bool(feedback.get("no_speech_detected", False)),
         "feedback_generated": bool(attempt.feedback_generated),
         "feedback_shown": bool(attempt.feedback_shown),
         "feedback_type": attempt.feedback_type,
         "feedback": feedback,
+        "alignment": _json(getattr(attempt, "alignment_json", "{}"), "{}"),
+        "asr_sanity": _json(getattr(attempt, "asr_sanity_json", "{}"), "{}"),
+        "score_breakdown": _json(getattr(attempt, "score_breakdown_json", "{}"), "{}"),
         "feedback_use_state": _feedback_use_state(db, attempt),
         "feedback_viewed": db.query(FeedbackView).filter(FeedbackView.attempt_id == attempt.id).count() > 0,
         "re_recorded": db.query(RevisionEvent).filter(RevisionEvent.previous_attempt_id == attempt.id).count() > 0,
@@ -118,12 +127,15 @@ def _attempt_to_dict(db, attempt, base_score=None):
         "target_text": attempt.task.target_text if attempt.task else "",
         "task_type": attempt.task.task_type if attempt.task else "",
         "score": score,
-        "improvement": round(score - base_score, 2) if base_score is not None else 0,
+        "improvement": improvement,
     }
 
 
 def _detect_issue_types(task, alignment, features):
-    issues = set(_json(task.issue_types_json, "[]"))
+    task_issues = _json(task.issue_types_json, "[]")
+    focus_words = _json(task.focus_words, "[]")
+    issue_records = issue_records_for_alignment(task_issues, focus_words, alignment, features)
+    issues = {record["issue_type"] for record in issue_records}
     if features["speech_rate_wpm"] < 70:
         issues.add("speech_rate_slow")
     if features["speech_rate_wpm"] > 180:
@@ -331,15 +343,30 @@ def analyze_attempt(
     transcript = asr_service.transcribe(audio_path, task.target_text)
     alignment = align_text(task.target_text, transcript)
     features = analyze_audio(audio_path, transcript)
-    score = compute_score(alignment, features)
+    asr_sanity = check_asr_sanity(task.target_text, transcript, features, transcript_hint)
+    if not asr_sanity["asr_valid"]:
+        features["no_speech_detected"] = True
+        features["valid_audio"] = False
+        features.setdefault("invalid_reasons", []).extend(asr_sanity["warnings"])
+    score_result = compute_practice_score(alignment, features)
+    score = score_result["practice_score"]
     issues = _detect_issue_types(task, alignment, features)
-    structured = generate_feedback("explainable", score, task.target_text, transcript, alignment, features)
+    structured = generate_feedback("explainable", score or 0, task.target_text, transcript, alignment, features)
+    structured["practice_score"] = score
+    structured["score_breakdown"] = score_result["score_breakdown"]
+    structured["score_note"] = score_result["score_note"]
+    structured["asr_sanity"] = asr_sanity
     if features.get("no_speech_detected"):
         score = 0
         feedback = {
             "overall_score": None,
+            "practice_score": None,
+            "score_breakdown": score_result["score_breakdown"],
+            "score_note": score_result["score_note"],
             "no_speech_detected": True,
+            "valid_audio": False,
             "feedback_type": "invalid_audio",
+            "asr_warnings": asr_sanity["warnings"],
             "comment": "No valid speech was detected. Please record your voice again.",
         }
     else:
@@ -366,6 +393,10 @@ def analyze_attempt(
         missing_words_json=json.dumps(alignment["missing_words"]),
         substitutions_json=json.dumps(alignment["substitutions"]),
         issue_types_detected_json=json.dumps(issues),
+        alignment_json=json.dumps(alignment),
+        asr_sanity_json=json.dumps(asr_sanity),
+        score_breakdown_json=json.dumps(score_result),
+        valid_audio=bool(features.get("valid_audio", True)),
         long_pause_count=features["long_pause_count"],
         feedback_generated=True,
         feedback_shown=feedback_shown,
@@ -397,8 +428,18 @@ def analyze_attempt(
     if feedback_shown:
         db.add(FeedbackView(participant_id=participant_id, task_id=task_id, attempt_id=attempt.id, feedback_item_id=item.id))
 
-    for issue in issues:
-        db.add(IssueRecord(participant_id=participant_id, task_id=task_id, attempt_id=attempt.id, issue_type=issue, target_word=(alignment["missing_words"] or [""])[0], evidence_json=json.dumps({"alignment": alignment})))
+    task_issues = _json(task.issue_types_json, "[]")
+    focus_words = _json(task.focus_words, "[]")
+    for issue in issue_records_for_alignment(task_issues, focus_words, alignment, features):
+        db.add(IssueRecord(
+            participant_id=participant_id,
+            task_id=task_id,
+            attempt_id=attempt.id,
+            issue_type=issue["issue_type"],
+            target_word=issue["target_word"],
+            severity=0.5 if issue["severity"] == "moderate" else 1.0,
+            evidence_json=json.dumps({"evidence": issue["evidence"], "alignment": alignment, "extra": issue["extra"]}),
+        ))
 
     if previous:
         prev_score = previous.assessment_score or _attempt_score(previous) or 0
@@ -407,13 +448,14 @@ def analyze_attempt(
             task_id=task_id,
             previous_attempt_id=previous.id,
             new_attempt_id=attempt.id,
-            score_delta=score - prev_score,
+            score_delta=(score or 0) - prev_score,
             word_match_delta=alignment["word_match_score"] - previous.word_match_score,
             repeated_issue_reduced=len(issues) < len(_json(previous.issue_types_detected_json, "[]")),
             transcript_change="%s -> %s" % (previous.asr_transcript, transcript),
             transcript_change_summary="Word match delta: %.2f" % (alignment["word_match_score"] - previous.word_match_score),
         ))
-    update_learner_state(db, participant_id, attempt)
+    if features.get("valid_audio", True):
+        update_learner_state(db, participant_id, attempt)
     db.commit()
     return _attempt_to_dict(db, attempt)
 

@@ -2,11 +2,14 @@ from pathlib import Path
 import wave
 import audioop
 
-from ..config import LONG_PAUSE_SECONDS
-
-
-MIN_VALID_AUDIO_SECONDS = 0.5
-MIN_VALID_RMS = 80
+from ..config import (
+    LONG_PAUSE_SECONDS,
+    MAX_VALID_AUDIO_SECONDS,
+    MIN_TRANSCRIPT_TOKENS,
+    MIN_VALID_AUDIO_BYTES,
+    MIN_VALID_AUDIO_SECONDS,
+    MIN_VALID_RMS,
+)
 
 
 def _wav_duration(path):
@@ -28,22 +31,36 @@ def analyze_audio(path, transcript):
     duration = 0.0
     mean_energy = 0.0
     audio_decoded = False
+    invalid_reasons = []
+    file_size = 0
     try:
+        file_size = audio_path.stat().st_size
         if audio_path.suffix.lower() == ".wav":
             duration = _wav_duration(audio_path)
             mean_energy = float(_wav_energy(audio_path))
             audio_decoded = True
         else:
-            duration = max(audio_path.stat().st_size / 16000.0, 1.0)
-    except Exception:
+            duration = max(file_size / 16000.0, 1.0)
+    except Exception as exc:
         duration = 0.0
+        invalid_reasons.append("audio_decode_failed:%s" % exc.__class__.__name__)
 
     words = [w for w in (transcript or "").split() if w.strip()]
     speech_rate = len(words) / max(duration / 60.0, 0.01)
-    no_speech_detected = duration < MIN_VALID_AUDIO_SECONDS
-    if audio_decoded and mean_energy < MIN_VALID_RMS:
+    no_speech_detected = False
+    if file_size < MIN_VALID_AUDIO_BYTES:
+        invalid_reasons.append("file_too_small")
         no_speech_detected = True
-    if not words:
+    if duration < MIN_VALID_AUDIO_SECONDS:
+        invalid_reasons.append("audio_too_short")
+        no_speech_detected = True
+    if duration > MAX_VALID_AUDIO_SECONDS:
+        invalid_reasons.append("audio_too_long")
+    if audio_decoded and mean_energy < MIN_VALID_RMS:
+        invalid_reasons.append("audio_too_silent")
+        no_speech_detected = True
+    if len(words) < MIN_TRANSCRIPT_TOKENS:
+        invalid_reasons.append("transcript_too_short")
         no_speech_detected = True
 
     # Lightweight version-1 pause estimate. Real silence detection can be added
@@ -56,6 +73,9 @@ def analyze_audio(path, transcript):
         "speech_rate_wpm": round(speech_rate, 2),
         "long_pause_count": long_pause_count,
         "mean_energy": round(mean_energy, 2),
+        "file_size_bytes": file_size,
         "audio_decoded": audio_decoded,
         "no_speech_detected": no_speech_detected,
+        "valid_audio": not no_speech_detected,
+        "invalid_reasons": invalid_reasons,
     }

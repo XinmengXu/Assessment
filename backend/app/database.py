@@ -99,6 +99,10 @@ class Attempt(Base):
     missing_words_json = Column(Text, default="[]")
     substitutions_json = Column(Text, default="[]")
     issue_types_detected_json = Column(Text, default="[]")
+    alignment_json = Column(Text, default="{}")
+    asr_sanity_json = Column(Text, default="{}")
+    score_breakdown_json = Column(Text, default="{}")
+    valid_audio = Column(Boolean, default=True)
     long_pause_count = Column(Integer, default=0)
     feedback_generated = Column(Boolean, default=True)
     feedback_shown = Column(Boolean, default=True)
@@ -276,6 +280,10 @@ def migrate_sqlite_columns():
             "transcript_confidence_optional": "FLOAT DEFAULT 0",
             "assessment_score": "FLOAT DEFAULT 0",
             "issue_types_detected_json": "TEXT DEFAULT '[]'",
+            "alignment_json": "TEXT DEFAULT '{}'",
+            "asr_sanity_json": "TEXT DEFAULT '{}'",
+            "score_breakdown_json": "TEXT DEFAULT '{}'",
+            "valid_audio": "BOOLEAN DEFAULT 1",
             "feedback_generated": "BOOLEAN DEFAULT 1",
             "feedback_shown": "BOOLEAN DEFAULT 1",
             "feedback_policy_id": "VARCHAR DEFAULT ''",

@@ -96,6 +96,9 @@ def filter_feedback_for_condition(condition, transcript, score, structured_feedb
         "revision_allowed": policy["revision_allowed"],
         "asr_transcript": transcript if policy["show_transcript"] else "",
         "overall_score": score if policy["show_score"] else None,
+        "practice_score": score if policy["show_score"] else None,
+        "score_breakdown": structured_feedback.get("score_breakdown", {}) if policy["show_score"] else {},
+        "score_note": structured_feedback.get("score_note", "This is a practice indicator, not a validated proficiency score."),
     }
     if policy["feedback_type"] == "assessment_only":
         result["comment"] = "This is an assessment-only task. Feedback is hidden for research design reasons."

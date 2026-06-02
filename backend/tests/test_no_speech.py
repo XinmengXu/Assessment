@@ -41,8 +41,10 @@ def test_blank_transcript_attempt_returns_invalid_audio(tmp_path):
     assert response.status_code == 200
     payload = response.json()
     assert payload["no_speech_detected"] is True
+    assert payload["valid_audio"] is False
     assert payload["feedback_type"] == "invalid_audio"
     assert payload["feedback"]["overall_score"] is None
+    assert payload["score"] is None
 
 
 def test_demo_client_labels_simulated_scores():

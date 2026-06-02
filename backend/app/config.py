@@ -13,6 +13,12 @@ WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "base")
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 
+MIN_VALID_AUDIO_SECONDS = float(os.getenv("MIN_VALID_AUDIO_SECONDS", "0.8"))
+MAX_VALID_AUDIO_SECONDS = float(os.getenv("MAX_VALID_AUDIO_SECONDS", "180"))
+MIN_VALID_AUDIO_BYTES = int(os.getenv("MIN_VALID_AUDIO_BYTES", "512"))
+MIN_VALID_RMS = float(os.getenv("MIN_VALID_RMS", "80"))
+MIN_TRANSCRIPT_TOKENS = int(os.getenv("MIN_TRANSCRIPT_TOKENS", "1"))
+
 SCORE_WEIGHTS = {
     "word_match": 70,
     "missing_penalty": 4,

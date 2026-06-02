@@ -6,7 +6,7 @@ A runnable lightweight research platform for controlled education-AI experiments
 
 - Learners enter a participant ID, group, and session ID.
 - Learners select a read-aloud task, record in the browser, or upload audio.
-- Backend stores audio locally and analyzes transcript match, duration, speech rate, long pauses, missing words, substitutions, and score.
+- Backend stores audio locally and analyzes transcript match, duration, speech rate, long pauses, missing words, substitutions, ASR sanity warnings, invalid-audio status, and a lightweight practice clarity score.
 - Experimental conditions A-G are supported: assessment-only, transcript-only, score-only, explainable, adaptive, human-validated, and optional LLM-verbalized feedback.
 - Explainable and adaptive groups receive diagnosis, explanation, action guidance, revision goals, and metacognitive prompts.
 - Attempt history shows multiple attempts and improvement indicators.
@@ -72,7 +72,7 @@ Mock ASR is the default in `backend/app/config.py`.
 
 In the learner page, use the optional mock transcript hint to simulate what ASR recognized. If the hint is blank, mock mode returns an empty transcript and the score will be low. This avoids pretending that arbitrary audio was recognized correctly.
 
-If no transcript is detected, or if a WAV file is silent or too short, the backend returns `no_speech_detected=true`, `feedback_type=invalid_audio`, and the message: “No valid speech was detected. Please record your voice again.”
+If no transcript is detected, or if a WAV file is silent or too short, the backend returns `no_speech_detected=true`, `valid_audio=false`, `feedback_type=invalid_audio`, and the message: `No valid speech was detected. Please record your voice again.`
 
 ## Real ASR Mode
 
@@ -83,7 +83,18 @@ ASR_MODE = "faster_whisper"
 WHISPER_MODEL_SIZE = "base"
 ```
 
-CPU mode uses `int8` by default in `app/analysis/asr.py`. If the model cannot load, the backend falls back to mock ASR.
+CPU mode uses `int8` by default in `app/analysis/asr.py`. If the configured model cannot load, the backend raises an error instead of silently falling back to mock ASR.
+
+## Lightweight Practice Scoring
+
+The learner-facing score is a `Practice clarity score`. It is a transparent practice indicator based on word match, missing words, substitutions, speech-rate penalty, pause penalty, and invalid-audio checks. It is not a validated speaking proficiency score.
+
+Each attempt stores:
+
+- `valid_audio` and invalid-audio reasons.
+- `asr_sanity` warnings such as empty transcript or repeated hallucination patterns.
+- Complete alignment JSON with matched, missing, substituted, and inserted words.
+- `score_breakdown` with the components used to produce the practice score.
 
 ## Export Data
 

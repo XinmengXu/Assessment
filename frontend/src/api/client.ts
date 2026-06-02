@@ -30,6 +30,7 @@ export type Attempt = {
   missing_words: string[];
   substitutions: { expected: string; heard: string }[];
   long_pause_count: number;
+  valid_audio?: boolean;
   no_speech_detected?: boolean;
   feedback_type: string;
   feedback_use_state?: string;
@@ -38,6 +39,9 @@ export type Attempt = {
   task_type?: string;
   condition?: string;
   feedback: Record<string, string | number | boolean | null>;
+  alignment?: Record<string, unknown>;
+  asr_sanity?: { asr_valid?: boolean; warnings?: string[]; transcript_quality?: string };
+  score_breakdown?: Record<string, unknown>;
   created_at: string;
   target_text: string;
   score: number | null;

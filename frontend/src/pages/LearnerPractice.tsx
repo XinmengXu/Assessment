@@ -93,7 +93,7 @@ export function LearnerPractice({ participantId, groupId, sessionId, tasks, onAt
           <select value={task?.id || ""} onChange={(event) => setTaskId(Number(event.target.value))}>
             {tasks.map((item) => (
               <option value={item.id} key={item.id}>
-                {item.task_code || `Task ${item.id}`}: {item.task_type || "practice"} · {item.difficulty}
+                {item.task_code || `Task ${item.id}`}: {item.task_type || "practice"} - {item.difficulty}
               </option>
             ))}
           </select>
@@ -103,7 +103,7 @@ export function LearnerPractice({ participantId, groupId, sessionId, tasks, onAt
           <article className="sentence-card">
             <span>{task.speaking_target}</span>
             <h3>{task.target_text}</h3>
-            <p>Task type: {task.task_type || "practice"} · Revision {task.revision_allowed === false ? "not allowed" : "allowed"} · Feedback {task.feedback_allowed === false ? "hidden" : "available"}</p>
+            <p>Task type: {task.task_type || "practice"} - Revision {task.revision_allowed === false ? "not allowed" : "allowed"} - Feedback {task.feedback_allowed === false ? "hidden" : "available"}</p>
             <p>Focus: {task.focus_words.join(", ") || "general intelligibility"}</p>
             {task.issue_types?.length ? <p>Issue focus: {task.issue_types.join(", ")}</p> : null}
           </article>
@@ -153,7 +153,7 @@ function FeedbackPanel({ attempt, groupId }: { attempt: Attempt | null; groupId:
     return (
       <aside className="panel">
         <h2>Feedback</h2>
-        <p className="muted">Your transcript, metrics, score, and feedback pathway will appear here after submission.</p>
+        <p className="muted">Your transcript, metrics, practice clarity score, and feedback pathway will appear here after submission.</p>
       </aside>
     );
   }
@@ -161,18 +161,23 @@ function FeedbackPanel({ attempt, groupId }: { attempt: Attempt | null; groupId:
   return (
     <aside className="panel feedback-panel">
       <div className={attempt.no_speech_detected || attempt.feedback_type === "invalid_audio" ? "score-ring invalid" : "score-ring"}>
-        {feedback.overall_score ?? "N/A"}
+        {feedback.practice_score ?? feedback.overall_score ?? "N/A"}
       </div>
       <h2>Automated Feedback</h2>
+      <p className="small-note">Practice clarity score, not a validated speaking proficiency score.</p>
       {feedback.demo_notice && <div className="demo-inline">{String(feedback.demo_notice)}</div>}
       <p className="transcript">Transcript: {attempt.asr_transcript}</p>
       {!attempt.asr_transcript && <p className="transcript">Transcript hidden by the assigned research condition.</p>}
       <div className="metrics-grid">
         <Metric label="Duration" value={`${attempt.duration_seconds}s`} />
         <Metric label="Speech rate" value={`${attempt.speech_rate_wpm} wpm`} />
-        <Metric label={feedback.simulated ? "Simulated practice score" : "Word match"} value={feedback.simulated ? String(feedback.overall_score ?? "N/A") : `${attempt.word_match_score}%`} />
+        <Metric label={feedback.simulated ? "Simulated practice score" : "Practice clarity score"} value={feedback.simulated ? String(feedback.overall_score ?? "N/A") : String(feedback.practice_score ?? feedback.overall_score ?? "N/A")} />
+        <Metric label="Word match" value={`${attempt.word_match_score}%`} />
         <Metric label="Long pauses" value={attempt.long_pause_count} />
       </div>
+      {attempt.asr_sanity?.warnings?.length ? (
+        <div className="feedback-box warning-box"><strong>ASR Warnings</strong><p>{attempt.asr_sanity.warnings.join(", ")}</p></div>
+      ) : null}
       {attempt.no_speech_detected || attempt.feedback_type === "invalid_audio" ? (
         <div className="feedback-box error-box"><strong>No Valid Speech</strong><p>{feedback.comment}</p></div>
       ) : groupId === "control" ? (

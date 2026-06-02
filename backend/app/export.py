@@ -11,7 +11,8 @@ FIELDS = [
     "attempt_id", "participant_id", "group_id", "task_id", "attempt_number",
     "timestamp", "target_text", "transcript", "score", "duration_seconds",
     "speech_rate_wpm", "word_match_score", "missing_words", "substitutions",
-    "long_pause_count", "feedback_type",
+    "long_pause_count", "feedback_type", "valid_audio", "asr_sanity",
+    "alignment_json", "score_breakdown",
 ]
 
 
@@ -39,6 +40,10 @@ def _attempt_rows(db, participant_id=None):
             "substitutions": attempt.substitutions_json,
             "long_pause_count": attempt.long_pause_count,
             "feedback_type": attempt.feedback_type,
+            "valid_audio": getattr(attempt, "valid_audio", True),
+            "asr_sanity": getattr(attempt, "asr_sanity_json", "{}"),
+            "alignment_json": getattr(attempt, "alignment_json", "{}"),
+            "score_breakdown": getattr(attempt, "score_breakdown_json", "{}"),
         })
     return rows
 

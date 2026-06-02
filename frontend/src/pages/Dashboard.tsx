@@ -19,8 +19,18 @@ type Summary = {
   revision_events: number;
 };
 
+type Health = {
+  status: string;
+  mock_mode: boolean;
+  asr_adapter: string;
+  whisper_model_size?: string;
+  whisper_device?: string;
+  app_version?: string;
+};
+
 export function Dashboard() {
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [health, setHealth] = useState<Health | null>(null);
   const [group, setGroup] = useState("");
   const [participant, setParticipant] = useState("");
 
@@ -29,6 +39,7 @@ export function Dashboard() {
     if (group) params.set("group", group);
     if (participant) params.set("participant", participant);
     api<Summary>(`/dashboard/summary?${params}`).then(setSummary);
+    api<Health>("/health").then(setHealth).catch(() => setHealth(null));
   }
 
   useEffect(load, []);
@@ -57,6 +68,12 @@ export function Dashboard() {
       </div>
       {summary && (
         <>
+          {health && (
+            <div className={health.mock_mode ? "feedback-box warning-box" : "feedback-box"}>
+              <strong>Backend Status</strong>
+              <p>{health.status} - ASR: {health.asr_adapter}{health.whisper_model_size ? ` (${health.whisper_model_size}, ${health.whisper_device})` : ""}</p>
+            </div>
+          )}
           <div className="stats-grid">
             <Stat label="Participants" value={summary.participants} />
             <Stat label="Tasks" value={summary.tasks} />

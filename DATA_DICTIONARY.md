@@ -30,6 +30,10 @@ This prototype exports CSV files from `data/exports`.
 - `word_match_score`: target/transcript word overlap indicator.
 - `assessment_score`: interpretable practice score, not a validated proficiency score.
 - `missing_words_json`, `substitutions_json`: text-alignment evidence.
+- `valid_audio`: false when audio is too short, silent, empty, corrupt, or ASR evidence is not meaningful.
+- `alignment_json`: complete normalized word-level alignment, including operations, matched words, missing words, substitutions, and inserted words.
+- `asr_sanity_json`: transcript validity object with `asr_valid`, `warnings`, and `transcript_quality`.
+- `score_breakdown_json`: practice score object with component weights and the score note.
 - `issue_types_detected_json`: rule-detected issue categories.
 - `feedback_type`: policy output for the assigned condition.
 - `feedback_policy_id`: condition or policy key.
@@ -65,3 +69,22 @@ This prototype exports CSV files from `data/exports`.
 - `pronunciation_rating`, `fluency_rating`, `comprehensibility_rating`: human ratings.
 - `feedback_appropriate`: whether automatic feedback was suitable.
 - `notes`: free-form annotator comments.
+
+## Issue Types
+
+- `generic_unclear_word`: missing or substituted non-focus word.
+- `theta_words`: TH sound focus words.
+- `r_l_contrast`: R/L contrast focus words.
+- `final_consonants`: final consonant focus words.
+- `consonant_clusters`: consonant cluster focus words.
+- `speech_rate_fast`, `speech_rate_slow`, `long_pause`: lightweight fluency indicators.
+- `word_stress`, `rhythm`: task-level speaking targets.
+- `invalid_audio`: no valid speech was detected.
+
+## Practice Score
+
+- `practice_score`: 0-100 or null for invalid audio.
+- `word_match_component`: contribution from target/transcript word match.
+- `missing_penalty`, `substitution_penalty`, `speech_rate_penalty`, `pause_penalty`: transparent deductions.
+- `invalid_audio_penalty`: 100 when no useful score should be shown.
+- `score_note`: states that the score is a practice indicator, not a validated proficiency score.
