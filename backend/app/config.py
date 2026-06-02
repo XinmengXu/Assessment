@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -7,8 +8,10 @@ AUDIO_DIR = DATA_DIR / "audio"
 EXPORT_DIR = DATA_DIR / "exports"
 DB_PATH = DATA_DIR / "app.db"
 
-ASR_MODE = "mock"  # "mock" or "faster_whisper"
-WHISPER_MODEL_SIZE = "base"
+ASR_MODE = os.getenv("ASR_MODE", "mock")  # "mock" or "faster_whisper"
+WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "base")
+WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
+WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 
 SCORE_WEIGHTS = {
     "word_match": 70,
