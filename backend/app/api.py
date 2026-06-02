@@ -766,6 +766,10 @@ def _feedback_item_or_404(db, feedback_item_id):
 
 def _feedback_item_dict(item):
     data = clean_model(item)
+    data["diagnosis"] = item.diagnosis
+    data["explanation"] = item.explanation
+    data["action_guidance"] = item.action_guidance
+    data["revision_goal"] = item.revision_goal
     data["validation_status"] = item.validation_status
     data["released_to_learner"] = bool(item.released_to_learner)
     data["approved_by_human"] = bool(item.approved_by_human)

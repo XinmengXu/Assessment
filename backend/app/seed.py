@@ -116,7 +116,12 @@ def seed_database(db):
         practice_tasks = db.query(Task).filter(Task.task_type == "practice").order_by(Task.id.asc()).all()
         changed = False
         for idx, task in enumerate(practice_tasks):
-            if not task.focus_phonemes_json or task.focus_phonemes_json == "[]":
+            if (
+                not task.focus_words or task.focus_words == "[]"
+                or not task.issue_types_json or task.issue_types_json == "[]"
+                or not task.focus_phonemes_json or task.focus_phonemes_json == "[]"
+                or not task.word_phoneme_map_json or task.word_phoneme_map_json == "{}"
+            ):
                 _, issues, focus, phonemes, word_map = PRACTICE_BASE[idx % len(PRACTICE_BASE)]
                 task.issue_types_json = json.dumps(issues)
                 task.focus_words = json.dumps(focus)
