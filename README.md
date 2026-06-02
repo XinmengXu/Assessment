@@ -44,6 +44,12 @@ npm run dev
 
 Open `http://127.0.0.1:5173`.
 
+## GitHub Pages Demo
+
+The repository includes a GitHub Actions workflow that builds the React frontend and deploys it to GitHub Pages. On GitHub Pages, the app runs in a browser-local demo mode because GitHub Pages cannot run the FastAPI backend. Demo tasks, attempts, dashboard summaries, and CSV exports are stored in the browser's localStorage.
+
+For full research data collection with SQLite, audio files, and backend analysis, run the FastAPI backend locally or deploy it to a server and set `VITE_API_BASE` for the frontend build.
+
 ## Mock ASR Mode
 
 Mock ASR is the default in `backend/app/config.py`.
