@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BarChart3, BookOpen, ClipboardCheck, ClipboardList, FlaskConical, History, ShieldCheck } from "lucide-react";
-import { api, Attempt, isDemoMode, Task } from "./api/client";
+import { api, Attempt, BackendStatus, checkBackendHealth, getBackendStatus, Task } from "./api/client";
 import { LearnerPractice } from "./pages/LearnerPractice";
 import { AttemptHistory } from "./pages/AttemptHistory";
 import { Dashboard } from "./pages/Dashboard";
@@ -19,12 +19,15 @@ function App() {
   const [sessionId, setSessionId] = useState(localStorage.getItem("sessionId") || "pilot-session");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [latestAttempt, setLatestAttempt] = useState<Attempt | null>(null);
+  const [backendStatus, setBackendStatus] = useState<BackendStatus>(getBackendStatus());
   const [error, setError] = useState("");
 
   useEffect(() => {
+    checkBackendHealth().then(setBackendStatus);
     api<Task[]>("/tasks")
       .then(setTasks)
-      .catch((err) => setError(err.message));
+      .catch((err) => setError(err.message))
+      .finally(() => setBackendStatus(getBackendStatus()));
   }, []);
 
   useEffect(() => {
@@ -70,11 +73,7 @@ function App() {
       </aside>
 
       <main>
-        {isDemoMode() && (
-          <div className="demo-banner">
-            Demo mode: audio is not analyzed here. This page only simulates the research workflow. Run the FastAPI backend for real speech analysis.
-          </div>
-        )}
+        <BackendStatusBanner status={backendStatus} />
         <header className="topbar">
           <label>
             Participant ID
@@ -113,6 +112,24 @@ function App() {
         {page === "annotations" && <AnnotationReview />}
         {page === "study" && <StudyDesign />}
       </main>
+    </div>
+  );
+}
+
+function BackendStatusBanner({ status }: { status: BackendStatus }) {
+  if (status.mode === "real") {
+    return (
+      <div className="status-banner real-api">
+        Backend connected: real API mode. ASR adapter: {status.asr_adapter}
+      </div>
+    );
+  }
+  if (status.mode === "checking") {
+    return <div className="status-banner checking">Checking backend connection at {status.api_base}</div>;
+  }
+  return (
+    <div className="demo-banner">
+      Demo mode: no real backend connected. Audio is accepted only for interface testing. {status.reason}
     </div>
   );
 }

@@ -1,4 +1,27 @@
-export const API_BASE = import.meta.env.VITE_API_BASE || "/api";
+const CONFIGURED_API_BASE = String(import.meta.env.VITE_API_BASE || "").trim();
+export const API_BASE = CONFIGURED_API_BASE && CONFIGURED_API_BASE !== "demo" ? CONFIGURED_API_BASE : "/api";
+
+export type BackendStatus = {
+  mode: "checking" | "real" | "demo";
+  backend_connected: boolean;
+  api_base: string;
+  asr_adapter: string;
+  mock_mode?: boolean;
+  status?: string;
+  reason?: string;
+};
+
+let backendStatus: BackendStatus =
+  !CONFIGURED_API_BASE || CONFIGURED_API_BASE === "demo"
+    ? {
+        mode: "demo",
+        backend_connected: false,
+        api_base: API_BASE,
+        asr_adapter: "none",
+        reason: CONFIGURED_API_BASE === "demo" ? "VITE_API_BASE is set to demo." : "VITE_API_BASE is not configured.",
+      }
+    : { mode: "checking", backend_connected: false, api_base: API_BASE, asr_adapter: "unknown" };
+let healthPromise: Promise<BackendStatus> | null = null;
 
 export type Task = {
   id: number;
@@ -23,6 +46,7 @@ export type Attempt = {
   group_id: string;
   attempt_number: number;
   audio_path?: string;
+  asr_adapter?: string;
   asr_transcript: string;
   duration_seconds: number;
   speech_rate_wpm: number;
@@ -32,16 +56,18 @@ export type Attempt = {
   long_pause_count: number;
   valid_audio?: boolean;
   no_speech_detected?: boolean;
+  invalid_reasons?: string[];
   feedback_type: string;
   feedback_use_state?: string;
   feedback_viewed?: boolean;
   re_recorded?: boolean;
   task_type?: string;
   condition?: string;
-  feedback: Record<string, string | number | boolean | null>;
+  feedback: Record<string, unknown>;
   alignment?: Record<string, unknown>;
   asr_sanity?: { asr_valid?: boolean; warnings?: string[]; transcript_quality?: string };
   score_breakdown?: Record<string, unknown>;
+  debug_info?: Record<string, unknown>;
   created_at: string;
   target_text: string;
   score: number | null;
@@ -59,6 +85,12 @@ type Summary = {
   average_improvement_first_to_latest: number;
   feedback_views: number;
   revision_events: number;
+};
+
+type ScoreResult = {
+  practice_score: number | null;
+  score_breakdown: Record<string, number>;
+  score_note: string;
 };
 
 const TASK_KEY = "speechFeedbackDemoTasks";
@@ -97,6 +129,10 @@ const defaultTasks: Task[] = [
 }));
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const status = await checkBackendHealth();
+  if (status.mode === "demo") {
+    return demoApi<T>(path, init);
+  }
   try {
     const response = await fetch(`${API_BASE}${path}`, init);
     if (!response.ok) {
@@ -105,10 +141,8 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     }
     return response.json() as Promise<T>;
   } catch (error) {
-    if (shouldUseDemoFallback()) {
-      return demoApi<T>(path, init);
-    }
-    throw error;
+    setDemoStatus(`Backend request failed: ${error instanceof Error ? error.message : "unknown error"}`);
+    return demoApi<T>(path, init);
   }
 }
 
@@ -119,15 +153,61 @@ export function exportUrl(path: string) {
 }
 
 function shouldUseDemoFallback() {
-  return API_BASE === "demo" || (window.location.hostname.endsWith("github.io") && API_BASE === "/api");
+  return backendStatus.mode === "demo";
 }
 
 export function isDemoMode() {
   return shouldUseDemoFallback();
 }
 
+export async function checkBackendHealth(force = false): Promise<BackendStatus> {
+  if (!force && backendStatus.mode !== "checking") return backendStatus;
+  if (!CONFIGURED_API_BASE || CONFIGURED_API_BASE === "demo") return backendStatus;
+  if (!force && healthPromise) return healthPromise;
+  healthPromise = fetch(`${API_BASE}/health`, { cache: "no-store" })
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`Health check failed: ${response.status}`);
+      const health = await response.json();
+      backendStatus = {
+        mode: "real",
+        backend_connected: true,
+        api_base: API_BASE,
+        status: String(health.status || "ok"),
+        asr_adapter: String(health.asr_adapter || (health.mock_mode ? "mock" : "unknown")),
+        mock_mode: Boolean(health.mock_mode),
+      };
+      return backendStatus;
+    })
+    .catch((error) => {
+      setDemoStatus(`Backend health check failed: ${error instanceof Error ? error.message : "unknown error"}`);
+      return backendStatus;
+    });
+  return healthPromise;
+}
+
+export function getBackendStatus() {
+  return backendStatus;
+}
+
+export function backendModeLabel() {
+  if (backendStatus.mode === "real") return `Backend connected: real API mode. ASR adapter: ${backendStatus.asr_adapter}`;
+  if (backendStatus.mode === "checking") return `Checking backend at ${API_BASE}`;
+  return `Demo mode: no real backend connected. ${backendStatus.reason || ""}`;
+}
+
+function setDemoStatus(reason: string) {
+  backendStatus = {
+    mode: "demo",
+    backend_connected: false,
+    api_base: API_BASE,
+    asr_adapter: "none",
+    reason,
+  };
+}
+
 async function demoApi<T>(path: string, init?: RequestInit): Promise<T> {
   await new Promise((resolve) => window.setTimeout(resolve, 160));
+  if (path === "/health") return getBackendStatus() as T;
   if (path === "/tasks" && !init?.method) return getTasks() as T;
   if (path === "/tasks" && init?.method === "POST") return createTask(init) as T;
   if (path.startsWith("/tasks/") && init?.method === "PUT") return updateTask(path, init) as T;
@@ -211,6 +291,8 @@ function updateTask(path: string, init: RequestInit) {
 
 function analyzeAttempt(init: RequestInit) {
   const form = init.body as FormData;
+  const audio = form.get("audio");
+  const audioFile = audio instanceof File ? audio : null;
   const participantId = String(form.get("participant_id") || "sample001");
   const groupId = String(form.get("group_id") || "explainable");
   const taskId = Number(form.get("task_id") || 1);
@@ -221,8 +303,11 @@ function analyzeAttempt(init: RequestInit) {
   const speechRate = Math.round((words(transcript).length / duration) * 60 * 100) / 100;
   const longPauses = duration > words(transcript).length * 0.8 + 3 ? 1 : 0;
   const noSpeech = !transcript.trim();
-  const score = noSpeech ? null : scoreAttempt(alignment.word_match_score, alignment.missing_words.length, alignment.substitutions.length, speechRate, longPauses);
-  const feedback = noSpeech ? invalidDemoFeedback() : feedbackFor(groupId, score || 0, alignment, speechRate, longPauses);
+  const scoreBreakdown = noSpeech
+    ? invalidScoreBreakdown()
+    : scoreBreakdownFor(alignment.word_match_score, alignment.missing_words.length, alignment.substitutions.length, speechRate, longPauses);
+  const score = noSpeech ? null : scoreBreakdown.practice_score;
+  const feedback = noSpeech ? invalidDemoFeedback(scoreBreakdown) : feedbackFor(groupId, score || 0, alignment, speechRate, longPauses, scoreBreakdown);
   const attempts = getAttempts();
   const previousForTask = attempts.filter((item) => item.participant_id === participantId && item.task_id === taskId);
   const firstScore = previousForTask.find((item) => item.score !== null)?.score ?? score ?? 0;
@@ -233,6 +318,7 @@ function analyzeAttempt(init: RequestInit) {
     group_id: groupId,
     attempt_number: previousForTask.length + 1,
     audio_path: "browser-local-demo",
+    asr_adapter: "demo_no_asr",
     asr_transcript: transcript,
     duration_seconds: Math.round(duration * 100) / 100,
     speech_rate_wpm: speechRate,
@@ -240,9 +326,24 @@ function analyzeAttempt(init: RequestInit) {
     missing_words: alignment.missing_words,
     substitutions: alignment.substitutions,
     long_pause_count: longPauses,
+    valid_audio: !noSpeech,
     no_speech_detected: noSpeech,
+    invalid_reasons: noSpeech ? ["demo_mode_no_transcript_hint", "no_real_backend_connected"] : [],
     feedback_type: noSpeech ? "invalid_audio" : groupId === "control" ? "score_only" : "explainable",
     feedback,
+    alignment: { ...alignment, inserted_words: [] },
+    asr_sanity: {
+      asr_valid: !noSpeech,
+      warnings: noSpeech ? ["Demo mode cannot analyze audio. Provide transcript_hint or connect a real backend."] : [],
+      transcript_quality: noSpeech ? "empty" : "valid",
+    },
+    score_breakdown: scoreBreakdown,
+    debug_info: {
+      uploaded_file_name: audioFile?.name || "unknown",
+      uploaded_file_size: audioFile?.size || 0,
+      backend_connected: false,
+      api_base: API_BASE,
+    },
     created_at: new Date().toISOString(),
     target_text: task.target_text,
     score,
@@ -298,30 +399,77 @@ function align(targetText: string, transcript: string) {
 }
 
 function scoreAttempt(match: number, missing: number, substitutions: number, speechRate: number, pauses: number) {
+  return scoreBreakdownFor(match, missing, substitutions, speechRate, pauses).practice_score;
+}
+
+function scoreBreakdownFor(match: number, missing: number, substitutions: number, speechRate: number, pauses: number): ScoreResult {
+  const word_match_component = round(match * 0.7);
+  const missing_penalty = missing * 4;
+  const substitution_penalty = substitutions * 3;
+  const pause_penalty = pauses * 3;
+  const speech_rate_penalty = speechRate < 70 || speechRate > 180 ? 8 : 0;
+  let score = word_match_component - missing_penalty - substitution_penalty - pause_penalty - speech_rate_penalty;
+  return {
+    practice_score: Math.max(0, Math.min(100, round(score))),
+    score_breakdown: {
+      word_match_component,
+      missing_penalty,
+      substitution_penalty,
+      speech_rate_penalty,
+      pause_penalty,
+      invalid_audio_penalty: 0,
+    },
+    score_note: "This is a simulated practice indicator, not a validated proficiency score.",
+  };
+}
+
+function invalidScoreBreakdown(): ScoreResult {
+  return {
+    practice_score: null,
+    score_breakdown: {
+      word_match_component: 0,
+      missing_penalty: 0,
+      substitution_penalty: 0,
+      speech_rate_penalty: 0,
+      pause_penalty: 0,
+      invalid_audio_penalty: 100,
+    },
+    score_note: "Demo mode cannot analyze audio. Connect the FastAPI backend for real ASR.",
+  };
+}
+
+function oldScoreAttempt(match: number, missing: number, substitutions: number, speechRate: number, pauses: number) {
   let score = match * 0.7 - missing * 4 - substitutions * 3 - pauses * 3;
   if (speechRate < 70 || speechRate > 180) score -= 8;
   return Math.max(0, Math.min(100, round(score)));
 }
 
-function invalidDemoFeedback(): Record<string, string | number | boolean | null> {
+function invalidDemoFeedback(scoreBreakdown: ScoreResult = invalidScoreBreakdown()): Record<string, unknown> {
   return {
     overall_score: null,
+    practice_score: null,
+    score_breakdown: scoreBreakdown.score_breakdown,
+    score_note: scoreBreakdown.score_note,
     no_speech_detected: true,
+    valid_audio: false,
     simulated: true,
     demo_notice: "Demo mode: audio is accepted only for interface testing. No real ASR or speech analysis is running.",
     feedback_type: "invalid_audio",
-    comment: "No valid speech transcript was provided in demo mode. Run the FastAPI backend with real ASR for speech-based scoring.",
+    comment: "Demo mode cannot analyze audio. Provide a transcript hint for interface testing, or connect the FastAPI backend for real ASR.",
   };
 }
 
-function feedbackFor(groupId: string, score: number, alignment: ReturnType<typeof align>, speechRate: number, pauses: number): Record<string, string | number | boolean | null> {
+function feedbackFor(groupId: string, score: number, alignment: ReturnType<typeof align>, speechRate: number, pauses: number, scoreBreakdown: ScoreResult = scoreBreakdownFor(alignment.word_match_score, alignment.missing_words.length, alignment.substitutions.length, speechRate, pauses)): Record<string, unknown> {
   if (groupId === "control") {
-    return { overall_score: score, simulated: true, score_label: "simulated practice score", demo_notice: "Demo mode: no real audio analysis is running.", comment: `Your simulated practice score is ${score}. This is based only on the transcript hint, not on audio.` };
+    return { overall_score: score, practice_score: score, score_breakdown: scoreBreakdown.score_breakdown, score_note: scoreBreakdown.score_note, simulated: true, score_label: "simulated practice score", demo_notice: "Demo mode: no real audio analysis is running.", comment: `Your simulated practice score is ${score}. This is based only on the transcript hint, not on audio.` };
   }
   const issue = alignment.missing_words[0] || alignment.substitutions[0]?.expected || "";
   if (issue) {
     return {
       overall_score: score,
+      practice_score: score,
+      score_breakdown: scoreBreakdown.score_breakdown,
+      score_note: scoreBreakdown.score_note,
       simulated: true,
       score_label: "simulated practice score",
       demo_notice: "Demo mode: no real audio analysis is running.",
@@ -334,6 +482,9 @@ function feedbackFor(groupId: string, score: number, alignment: ReturnType<typeo
   if (speechRate < 70 || speechRate > 180 || pauses > 0) {
     return {
       overall_score: score,
+      practice_score: score,
+      score_breakdown: scoreBreakdown.score_breakdown,
+      score_note: scoreBreakdown.score_note,
       simulated: true,
       score_label: "simulated practice score",
       demo_notice: "Demo mode: no real audio analysis is running.",
@@ -345,6 +496,9 @@ function feedbackFor(groupId: string, score: number, alignment: ReturnType<typeo
   }
   return {
     overall_score: score,
+    practice_score: score,
+    score_breakdown: scoreBreakdown.score_breakdown,
+    score_note: scoreBreakdown.score_note,
     simulated: true,
     score_label: "simulated practice score",
     demo_notice: "Demo mode: no real audio analysis is running.",

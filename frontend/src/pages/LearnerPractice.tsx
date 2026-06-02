@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { Mic, Square, Upload, RotateCcw } from "lucide-react";
-import { api, Attempt, Task } from "../api/client";
+import { api, Attempt, getBackendStatus, Task } from "../api/client";
 
 type Props = {
   participantId: string;
@@ -143,7 +143,10 @@ export function LearnerPractice({ participantId, groupId, sessionId, tasks, onAt
         {error && <div className="alert">{error}</div>}
       </div>
 
-      <FeedbackPanel attempt={attempt} groupId={groupId} />
+      <div>
+        <FeedbackPanel attempt={attempt} groupId={groupId} />
+        <DebugPanel attempt={attempt} audioBlob={audioBlob} audioName={audioName} />
+      </div>
     </section>
   );
 }
@@ -158,20 +161,27 @@ function FeedbackPanel({ attempt, groupId }: { attempt: Attempt | null; groupId:
     );
   }
   const feedback = attempt.feedback;
+  const scoreText = String(feedback.practice_score ?? feedback.overall_score ?? "N/A");
+  const commentText = String(feedback.comment ?? "");
   return (
     <aside className="panel feedback-panel">
       <div className={attempt.no_speech_detected || attempt.feedback_type === "invalid_audio" ? "score-ring invalid" : "score-ring"}>
-        {feedback.practice_score ?? feedback.overall_score ?? "N/A"}
+        {scoreText}
       </div>
       <h2>Automated Feedback</h2>
       <p className="small-note">Practice clarity score, not a validated speaking proficiency score.</p>
-      {feedback.demo_notice && <div className="demo-inline">{String(feedback.demo_notice)}</div>}
-      <p className="transcript">Transcript: {attempt.asr_transcript}</p>
-      {!attempt.asr_transcript && <p className="transcript">Transcript hidden by the assigned research condition.</p>}
+      {feedback.demo_notice ? <div className="demo-inline">{String(feedback.demo_notice)}</div> : null}
+      {attempt.asr_transcript ? (
+        <p className="transcript">Transcript: {attempt.asr_transcript}</p>
+      ) : attempt.feedback_type === "invalid_audio" ? (
+        <p className="transcript">ASR returned empty transcript.</p>
+      ) : (
+        <p className="transcript">Transcript hidden by the assigned research condition.</p>
+      )}
       <div className="metrics-grid">
         <Metric label="Duration" value={`${attempt.duration_seconds}s`} />
         <Metric label="Speech rate" value={`${attempt.speech_rate_wpm} wpm`} />
-        <Metric label={feedback.simulated ? "Simulated practice score" : "Practice clarity score"} value={feedback.simulated ? String(feedback.overall_score ?? "N/A") : String(feedback.practice_score ?? feedback.overall_score ?? "N/A")} />
+        <Metric label={feedback.simulated ? "Simulated practice score" : "Practice clarity score"} value={scoreText} />
         <Metric label="Word match" value={`${attempt.word_match_score}%`} />
         <Metric label="Long pauses" value={attempt.long_pause_count} />
       </div>
@@ -179,13 +189,13 @@ function FeedbackPanel({ attempt, groupId }: { attempt: Attempt | null; groupId:
         <div className="feedback-box warning-box"><strong>ASR Warnings</strong><p>{attempt.asr_sanity.warnings.join(", ")}</p></div>
       ) : null}
       {attempt.no_speech_detected || attempt.feedback_type === "invalid_audio" ? (
-        <div className="feedback-box error-box"><strong>No Valid Speech</strong><p>{feedback.comment}</p></div>
+        <div className="feedback-box error-box"><strong>No Valid Speech</strong><p>{commentText}</p></div>
       ) : groupId === "control" ? (
-        <div className="feedback-box"><strong>Comment</strong><p>{feedback.comment}</p></div>
+        <div className="feedback-box"><strong>Comment</strong><p>{commentText}</p></div>
       ) : feedback.feedback_type === "assessment_only" ? (
-        <div className="feedback-box"><strong>Assessment Mode</strong><p>{feedback.comment}</p></div>
+        <div className="feedback-box"><strong>Assessment Mode</strong><p>{commentText}</p></div>
       ) : feedback.feedback_type === "transcript_only" ? (
-        <div className="feedback-box"><strong>Transcript Only</strong><p>{feedback.comment}</p></div>
+        <div className="feedback-box"><strong>Transcript Only</strong><p>{commentText}</p></div>
       ) : (
         <>
           <Box title="Diagnosis" text={String(feedback.diagnosis)} />
@@ -195,6 +205,34 @@ function FeedbackPanel({ attempt, groupId }: { attempt: Attempt | null; groupId:
         </>
       )}
       <p className="small-note">Automatically generated learning support, not a high-stakes assessment.</p>
+    </aside>
+  );
+}
+
+function DebugPanel({ attempt, audioBlob, audioName }: { attempt: Attempt | null; audioBlob: Blob | null; audioName: string }) {
+  const status = getBackendStatus();
+  const breakdown = attempt?.score_breakdown?.score_breakdown || attempt?.feedback?.score_breakdown || {};
+  return (
+    <aside className="panel debug-panel">
+      <h2>Debug Panel</h2>
+      <div className="metrics-grid">
+        <Metric label="Uploaded file" value={audioBlob ? audioName : "none"} />
+        <Metric label="File size" value={audioBlob ? `${audioBlob.size} bytes` : "0 bytes"} />
+        <Metric label="Backend" value={status.backend_connected ? "connected" : "demo/local"} />
+        <Metric label="ASR adapter" value={attempt?.asr_adapter || status.asr_adapter || "unknown"} />
+      </div>
+      <div className="feedback-box">
+        <strong>ASR transcript</strong>
+        <p>{attempt?.asr_transcript || "ASR returned empty transcript."}</p>
+      </div>
+      <div className="feedback-box">
+        <strong>Invalid audio reasons</strong>
+        <p>{attempt?.invalid_reasons?.length ? attempt.invalid_reasons.join(", ") : "None reported."}</p>
+      </div>
+      <div className="feedback-box">
+        <strong>Score breakdown</strong>
+        <pre>{JSON.stringify(breakdown, null, 2)}</pre>
+      </div>
     </aside>
   );
 }

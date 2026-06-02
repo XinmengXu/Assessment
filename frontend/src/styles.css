@@ -89,6 +89,25 @@ main { padding: 26px; }
   margin-bottom: 16px;
 }
 
+.status-banner {
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  font-weight: 700;
+}
+
+.real-api {
+  background: #eaf7ef;
+  border: 1px solid #86c99d;
+  color: #1f6b38;
+}
+
+.checking {
+  background: #fff8e8;
+  border: 1px solid #d9b45f;
+  color: #6c4d11;
+}
+
 .demo-inline {
   background: #fff8db;
   border: 1px solid #e8cf7a;
@@ -291,6 +310,12 @@ h2 { font-size: 24px; }
 }
 
 .feedback-box p { margin: 8px 0 0; line-height: 1.5; }
+.feedback-box pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 8px 0 0;
+  font-size: 12px;
+}
 .small-note { font-size: 13px; margin-top: 16px; }
 
 .table-wrap { overflow-x: auto; }

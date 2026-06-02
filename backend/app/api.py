@@ -113,6 +113,7 @@ def _attempt_to_dict(db, attempt, base_score=None):
         "long_pause_count": attempt.long_pause_count,
         "valid_audio": bool(getattr(attempt, "valid_audio", True)),
         "no_speech_detected": bool(feedback.get("no_speech_detected", False)),
+        "invalid_reasons": feedback.get("invalid_reasons", []),
         "feedback_generated": bool(attempt.feedback_generated),
         "feedback_shown": bool(attempt.feedback_shown),
         "feedback_type": attempt.feedback_type,
@@ -367,6 +368,7 @@ def analyze_attempt(
             "valid_audio": False,
             "feedback_type": "invalid_audio",
             "asr_warnings": asr_sanity["warnings"],
+            "invalid_reasons": features.get("invalid_reasons", []),
             "comment": "No valid speech was detected. Please record your voice again.",
         }
     else:

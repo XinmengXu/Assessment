@@ -48,21 +48,38 @@ npm run dev
 
 Open `http://127.0.0.1:5173`.
 
-## GitHub Pages Demo
+## GitHub Pages Deployment
 
-The repository includes a GitHub Actions workflow that builds the React frontend and deploys it to GitHub Pages. On GitHub Pages, the app runs in a browser-local demo mode because GitHub Pages cannot run the FastAPI backend.
+The repository includes a GitHub Actions workflow that builds the React frontend and deploys it to GitHub Pages. GitHub Pages can host only the static React frontend; it cannot run the FastAPI backend.
 
-Important: GitHub Pages does not analyze audio. Recording and upload controls are accepted only for interface testing. Demo mode uses the optional transcript hint or browser-local mock data to simulate the research workflow. Any score shown there is labelled as a simulated practice score, not a real assessment result.
+Important:
 
-For full research data collection with SQLite, audio files, and backend analysis, run the FastAPI backend locally or deploy it to a server and set `VITE_API_BASE` for the frontend build.
+- If `VITE_API_BASE` is missing or set to `demo`, GitHub Pages runs in demo mode.
+- Demo mode does not analyze audio. Recording and upload controls are accepted only for interface testing.
+- Demo scores are labelled as simulated and use only the optional transcript hint.
+- If `VITE_API_BASE` points to a deployed FastAPI backend and `${VITE_API_BASE}/health` succeeds, GitHub Pages uses the real backend and sends audio to `/attempts/analyze`.
 
-To connect a deployed frontend to a real backend, build with:
+For full research data collection with SQLite, audio files, real ASR, backend diagnostics, and exports, deploy the FastAPI backend to a server and build the frontend with:
 
 ```powershell
 cd frontend
 $env:VITE_API_BASE="https://your-backend.example.com/api"
 npm run build
 ```
+
+For GitHub Actions / GitHub Pages, set repository variable `VITE_API_BASE` to your deployed backend API base, for example:
+
+```text
+https://your-backend.example.com/api
+```
+
+The frontend performs a startup health check:
+
+```text
+GET ${VITE_API_BASE}/health
+```
+
+If the health check fails, the UI shows `Demo mode: no real backend connected` and uses browser-local demo data only.
 
 For local real testing, run the backend at `http://127.0.0.1:8000` and the frontend dev server. Vite proxies `/api` to FastAPI in local development.
 
