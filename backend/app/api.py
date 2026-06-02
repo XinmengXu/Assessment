@@ -615,7 +615,7 @@ def approve_feedback(feedback_item_id: int, payload: dict = None, db: Session = 
     item.validation_status = "approved"
     item.approved_by_human = True
     db.commit()
-    return clean_model(item)
+    return _feedback_item_dict(item)
 
 
 @router.post("/feedback/{feedback_item_id}/edit")
@@ -647,7 +647,7 @@ def edit_feedback(feedback_item_id: int, payload: dict, db: Session = Depends(ge
             system_version_id=getattr(attempt, "system_version_id", 1),
         ))
     db.commit()
-    return clean_model(item)
+    return _feedback_item_dict(item)
 
 
 @router.post("/feedback/{feedback_item_id}/reject")
@@ -657,7 +657,7 @@ def reject_feedback(feedback_item_id: int, payload: dict = None, db: Session = D
     item.released_to_learner = False
     item.validated_feedback_json = json.dumps(payload or {})
     db.commit()
-    return clean_model(item)
+    return _feedback_item_dict(item)
 
 
 @router.post("/feedback/{feedback_item_id}/release")
@@ -669,7 +669,7 @@ def release_feedback(feedback_item_id: int, db: Session = Depends(get_db)):
     item.released_to_learner = True
     item.approved_by_human = True
     db.commit()
-    return clean_model(item)
+    return _feedback_item_dict(item)
 
 
 def _feedback_item_or_404(db, feedback_item_id):
@@ -677,6 +677,14 @@ def _feedback_item_or_404(db, feedback_item_id):
     if not item:
         raise HTTPException(status_code=404, detail="Feedback item not found")
     return item
+
+
+def _feedback_item_dict(item):
+    data = clean_model(item)
+    data["validation_status"] = item.validation_status
+    data["released_to_learner"] = bool(item.released_to_learner)
+    data["approved_by_human"] = bool(item.approved_by_human)
+    return data
 
 
 @router.get("/learner-states/{participant_id}")
