@@ -17,7 +17,7 @@ class ASRService:
         sidecar = path.with_suffix(".txt")
         if sidecar.exists():
             return sidecar.read_text(encoding="utf-8").strip()
-        return target_text
+        return ""
 
     def _faster_whisper(self, audio_path):
         from faster_whisper import WhisperModel

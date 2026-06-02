@@ -58,7 +58,7 @@ For full research data collection with SQLite, audio files, and backend analysis
 
 Mock ASR is the default in `backend/app/config.py`.
 
-In the learner page, use the optional mock transcript hint to simulate recognition errors. If the hint is blank, the backend uses the target sentence as the transcript.
+In the learner page, use the optional mock transcript hint to simulate what ASR recognized. If the hint is blank, mock mode returns an empty transcript and the score will be low. This avoids pretending that arbitrary audio was recognized correctly.
 
 ## Real ASR Mode
 

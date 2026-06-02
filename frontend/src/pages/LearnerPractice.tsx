@@ -132,7 +132,7 @@ export function LearnerPractice({ participantId, groupId, sessionId, tasks, onAt
           <textarea
             value={transcriptHint}
             onChange={(event) => setTranscriptHint(event.target.value)}
-            placeholder="Optional in mock mode. Leave blank to use the target sentence as the transcript."
+            placeholder="Optional in mock mode. Leave blank to simulate no recognized words."
           />
         </label>
 

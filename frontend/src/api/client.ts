@@ -206,7 +206,7 @@ function analyzeAttempt(init: RequestInit) {
   const groupId = String(form.get("group_id") || "explainable");
   const taskId = Number(form.get("task_id") || 1);
   const task = getTasks().find((item) => item.id === taskId) || getTasks()[0];
-  const transcript = String(form.get("transcript_hint") || task.target_text);
+  const transcript = String(form.get("transcript_hint") || "");
   const alignment = align(task.target_text, transcript);
   const duration = 3 + Math.max(words(transcript).length * 0.42, 1);
   const speechRate = Math.round((words(transcript).length / duration) * 60 * 100) / 100;
