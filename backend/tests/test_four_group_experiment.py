@@ -78,3 +78,46 @@ def test_four_group_exports_include_analysis_fields():
     assert "word_to_practise" in text
     assert "score_hidden" in text
     assert "comment_hidden" in text
+
+
+def test_study_setup_assignment_import_and_preview_workflow():
+    activate = client.post("/api/studies/1/activate-four-group-design")
+    assert activate.status_code == 200
+    assert activate.json()["groups"] == ["G0", "G1", "G2", "G3"]
+
+    for group in ["G0", "G1", "G2", "G3"]:
+        response = client.post("/api/users", json={
+            "user_code": f"assign_{group.lower()}",
+            "role": "student",
+            "display_name": f"Assigned {group}",
+            "class_id": 1,
+            "group_id": 1,
+            "condition_group": group,
+        })
+        assert response.status_code == 200
+        assert response.json()["condition_group"] == group
+
+    bad_csv = "user_code,role,display_name,class_id,group_id,condition_group\nbad001,student,Bad,1,1,G9\n"
+    imported = client.post("/api/users/import", files={"file": ("users.csv", bad_csv, "text/csv")})
+    assert imported.status_code == 200
+    assert imported.json()["imported"] == 0
+    assert imported.json()["errors"]
+
+    task = client.get("/api/tasks").json()[0]
+    preview = client.post("/api/studies/1/feedback-preview", json={"task_id": task["id"], "transcript": task["target_text"], "condition_group": "G2"})
+    assert preview.status_code == 200
+    assert preview.json()["feedback"]["show_comment"] is True
+    assert preview.json()["feedback"]["show_score"] is False
+
+
+def test_users_export_includes_condition_group():
+    response = client.get("/api/exports/users")
+    assert response.status_code == 200
+    assert "condition_group" in response.text
+
+
+def test_teacher_ui_is_student_first_static_check():
+    text = open("frontend/src/main.tsx", encoding="utf-8").read()
+    assert "Student List" in text
+    assert "Student Detail" in text
+    assert "Review one selected student attempt at a time" in text

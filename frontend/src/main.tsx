@@ -220,32 +220,67 @@ function StudentProgress({ user }: { user: PilotUser }) {
 
 function TeacherStudentList({ user, onReview }: { user: PilotUser; onReview: (attempt: Attempt) => void }) {
   const [rows, setRows] = useState<Attempt[]>([]);
+  const [selectedStudent, setSelectedStudent] = useState<string>("");
   useEffect(() => { api<Attempt[]>(`/teacher/submissions?user_code=${user.user_code}`).then(setRows); }, [user.user_code]);
   const students = [...rows.reduce((map, attempt) => {
-    const item = map.get(attempt.participant_id) || { student_id: attempt.participant_id, completed: 0, revisions: 0, latest: attempt, attempts: [] as Attempt[] };
+    const item = map.get(attempt.participant_id) || { student_id: attempt.participant_id, display_name: String((attempt as Attempt & { display_name?: string }).display_name || attempt.participant_id), completed: 0, revisions: 0, latest: attempt, attempts: [] as Attempt[] };
     item.completed += 1;
     item.revisions += attempt.attempt_number > 1 ? 1 : 0;
     item.latest = attempt;
     item.attempts.push(attempt);
     map.set(attempt.participant_id, item);
     return map;
-  }, new Map<string, { student_id: string; completed: number; revisions: number; latest: Attempt; attempts: Attempt[] }>()).values()];
+  }, new Map<string, { student_id: string; display_name: string; completed: number; revisions: number; latest: Attempt; attempts: Attempt[] }>()).values()];
+  const detail = students.find((student) => student.student_id === selectedStudent);
+  if (detail) {
+    const byTask = [...detail.attempts.reduce((map, attempt) => {
+      const items = map.get(attempt.task_id) || [];
+      map.set(attempt.task_id, [...items, attempt]);
+      return map;
+    }, new Map<number, Attempt[]>()).entries()];
+    return (
+      <section className="stack">
+        <div className="panel">
+          <div className="section-head"><div><h2>Student Detail</h2><p>{detail.student_id} · {detail.display_name}</p></div><button className="file-button" onClick={() => setSelectedStudent("")}>Back to Student List</button></div>
+          <table>
+            <thead><tr><th>Task ID</th><th>Target sentence</th><th>Attempts</th><th>Condition group</th><th>AI feedback shown</th><th>Teacher feedback status</th><th>Action</th></tr></thead>
+            <tbody>{byTask.map(([taskId, attempts]) => {
+              const latest = attempts[0];
+              const shown = latest.show_score && latest.show_comment ? "score/comment" : latest.show_score ? "score" : latest.show_comment ? "comment" : "none";
+              return (
+                <tr key={taskId}>
+                  <td>{taskId}</td>
+                  <td>{latest.target_text}</td>
+                  <td>{attempts.length}</td>
+                  <td>{latest.condition_group || latest.group_id}</td>
+                  <td>{shown}</td>
+                  <td>not released</td>
+                  <td><button className="primary" onClick={() => onReview(latest)}>Review</button></td>
+                </tr>
+              );
+            })}</tbody>
+          </table>
+        </div>
+      </section>
+    );
+  }
   return (
     <section className="panel">
       <h2>Student List</h2>
       <table>
-        <thead><tr><th>Student ID</th><th>Class</th><th>Group</th><th>Completed tasks</th><th>Pending teacher feedback</th><th>Revisions</th><th>Repeated focus sounds</th><th>Last activity</th><th>Action</th></tr></thead>
+        <thead><tr><th>Student ID</th><th>Display name</th><th>Class</th><th>Group</th><th>Condition group</th><th>Completed tasks</th><th>Pending feedback</th><th>Revisions</th><th>Last activity</th><th>Action</th></tr></thead>
         <tbody>{students.map((student) => (
           <tr key={student.student_id}>
             <td>{student.student_id}</td>
-            <td>{user.class_id || "-"}</td>
+            <td>{student.display_name}</td>
+            <td>{String((student.latest as Attempt & { class_id?: number }).class_id || user.class_id || "-")}</td>
+            <td>{String((student.latest as Attempt & { user_group_id?: number }).user_group_id || "-")}</td>
             <td>{student.latest.condition_group || student.latest.group_id}</td>
             <td>{new Set(student.attempts.map((attempt) => attempt.task_id)).size}</td>
             <td>{student.attempts.filter((attempt) => (attempt.score ?? 0) < 70).length}</td>
             <td>{student.revisions}</td>
-            <td>{student.attempts.flatMap((attempt) => attempt.missing_words || []).slice(0, 3).join(", ") || "-"}</td>
             <td>{new Date(student.latest.created_at).toLocaleString()}</td>
-            <td><button className="file-button" onClick={() => onReview(student.latest)}>Review</button></td>
+            <td><button className="file-button" onClick={() => setSelectedStudent(student.student_id)}>View</button></td>
           </tr>
         ))}</tbody>
       </table>
@@ -381,8 +416,39 @@ function SubmittedReviews({ user }: { user: PilotUser }) {
 
 function UsersAndGroups() {
   const [users, setUsers] = useState<PilotUser[]>([]);
-  useEffect(() => { api<PilotUser[]>("/users").then(setUsers); }, []);
-  return <SimpleRecordList title="Users and Groups" rows={users} empty="Create or import users through the backend API." />;
+  const [saved, setSaved] = useState("");
+  function load() { api<PilotUser[]>("/users").then(setUsers); }
+  useEffect(load, []);
+  async function updateGroup(user: PilotUser, conditionGroup: string) {
+    await api("/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...user, condition_group: conditionGroup }),
+    });
+    setSaved(`Updated ${user.user_code}`);
+    load();
+  }
+  return (
+    <section className="panel">
+      <div className="section-head"><h2>Users and Groups</h2><a className="button-link" href={exportUrl("/users/export")}>Export users</a></div>
+      <table>
+        <thead><tr><th>Student ID</th><th>Display name</th><th>Role</th><th>Class</th><th>Group</th><th>Condition group</th><th>Condition label</th><th>Edit</th></tr></thead>
+        <tbody>{users.map((item) => (
+          <tr key={item.id}>
+            <td>{item.user_code}</td>
+            <td>{item.display_name}</td>
+            <td>{item.role}</td>
+            <td>{item.class_id || "-"}</td>
+            <td>{item.group_id || "-"}</td>
+            <td>{item.condition_group || "-"}</td>
+            <td>{item.condition_label || "-"}</td>
+            <td>{item.role === "student" ? <select value={item.condition_group || "G3"} onChange={(event) => updateGroup(item, event.target.value)}><option>G0</option><option>G1</option><option>G2</option><option>G3</option></select> : "-"}</td>
+          </tr>
+        ))}</tbody>
+      </table>
+      {saved && <p className="status-text">{saved}</p>}
+    </section>
+  );
 }
 
 function DataExport() {

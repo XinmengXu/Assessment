@@ -50,6 +50,26 @@ Invoke-RestMethod -Method Post -ContentType "application/json" `
 
 Or use Study Setup in the admin UI and select `G0`, `G1`, `G2`, or `G3`.
 
+In the web app, log in as `admin001`, open `Study Setup`, and use:
+
+- `Feedback Information Comparison Design` to inspect the four groups.
+- `Activate four-group design` to create or refresh G0-G3 condition settings.
+- `Assign Students` to assign one student at a time.
+- `Bulk import assignments` for CSV upload.
+- `Preview student feedback by group` to verify what G0/G1/G2/G3 students will see.
+
+Bulk user/group assignment CSV:
+
+```text
+user_code,role,display_name,class_id,group_id,condition_group
+s001,student,Student 001,1,1,G0
+s002,student,Student 002,1,1,G1
+s003,student,Student 003,1,1,G2
+s004,student,Student 004,1,1,G3
+```
+
+Invalid or missing `condition_group` values are rejected for student rows during CSV import.
+
 ## Tech Stack
 
 - Frontend: React, Vite, TypeScript, MediaRecorder API
@@ -111,6 +131,8 @@ Teacher:
 - `POST /api/teacher/feedback/{feedback_id}/release`
 - `GET /api/teacher/class-review?user_code=teacher001`
 - `GET /api/teacher/class-summary?user_code=teacher001`
+
+The teacher UI starts from `Student List`. The teacher clicks a student to open `Student Detail`, reviews the task list for that student, and then opens one selected attempt in `Give Feedback`. Recordings are not expanded all at once.
 
 Peer reviewer:
 

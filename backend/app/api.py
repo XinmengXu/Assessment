@@ -326,8 +326,23 @@ def _participant_id_for_user(user):
     return user.user_code if user and user.role == "student" else ""
 
 
+def _condition_group_for_user(db, user):
+    if not user or user.role != "student":
+        return ""
+    participant = db.query(Participant).filter(Participant.participant_id == user.user_code).first()
+    return normalize_condition(participant.group_id if participant else "G3")
+
+
 def _attempt_with_task(db, attempt):
     data = _attempt_to_dict(db, attempt)
+    user = db.query(User).filter(User.user_code == attempt.participant_id).first()
+    if user:
+        user_data = _user_dict(user, db)
+        data["display_name"] = user_data["display_name"]
+        data["class_id"] = user_data["class_id"]
+        data["user_group_id"] = user_data["group_id"]
+        data["condition_group"] = user_data.get("condition_group") or data.get("condition_group")
+        data["condition_label"] = user_data.get("condition_label") or data.get("condition_label")
     data["audio_url"] = "/api/attempts/%s/audio" % attempt.id
     return data
 
@@ -394,15 +409,22 @@ def import_users(file: UploadFile = File(...), db: Session = Depends(get_db)):
     content = file.file.read().decode("utf-8-sig")
     rows = csv.DictReader(content.splitlines())
     imported = 0
+    errors = []
     for row in rows:
+        row_number = imported + len(errors) + 2
+        role = (row.get("role") or "student").strip()
+        condition_group = (row.get("condition_group") or "").strip().upper()
+        if role == "student" and condition_group not in ["G0", "G1", "G2", "G3"]:
+            errors.append({"row": row_number, "reason": "condition_group must be one of G0, G1, G2, G3"})
+            continue
         create_user(row, db)
         imported += 1
-    return {"imported": imported}
+    return {"imported": imported, "errors": errors}
 
 
 @router.get("/users/export")
 def export_users_alias(db: Session = Depends(get_db)):
-    return _write_csv(db, "users", [clean_model(user) for user in db.query(User).all()])
+    return export_users(db)
 
 
 @router.get("/classes")
@@ -840,6 +862,24 @@ def list_conditions(study_id: int, db: Session = Depends(get_db)):
     return result
 
 
+@router.post("/studies/{study_id}/activate-four-group-design")
+def activate_four_group_design(study_id: int, db: Session = Depends(get_db)):
+    list_conditions(study_id, db)
+    return {"ok": True, "active_design": "feedback_information_comparison", "groups": ["G0", "G1", "G2", "G3"]}
+
+
+@router.post("/studies/{study_id}/workflow-settings")
+def workflow_settings(study_id: int, payload: dict, db: Session = Depends(get_db)):
+    list_conditions(study_id, db)
+    enable_teacher = bool(payload.get("enable_teacher_feedback", False))
+    enable_peer = bool(payload.get("enable_peer_feedback", False))
+    for condition in db.query(Condition).filter(Condition.study_id == study_id, Condition.condition_code.in_(["G0", "G1", "G2", "G3"])).all():
+        condition.enable_teacher_feedback = enable_teacher
+        condition.enable_peer_feedback = enable_peer
+    db.commit()
+    return {"ok": True, "enable_teacher_feedback": enable_teacher, "enable_peer_feedback": enable_peer}
+
+
 @router.post("/studies/{study_id}/assign")
 def assign_participant(study_id: int, payload: dict, db: Session = Depends(get_db)):
     participant_id = payload.get("participant_id")
@@ -855,8 +895,45 @@ def assign_participant(study_id: int, payload: dict, db: Session = Depends(get_d
     participant.condition_id = condition.id
     participant.group_id = condition_code
     participant.group_label = condition.condition_name
+    user = db.query(User).filter(User.user_code == participant_id).first()
+    if user:
+        user.class_id = int(payload.get("class_id") or user.class_id or 0)
+        user.group_id = int(payload.get("group_id") or user.group_id or 0)
     db.commit()
     return participant
+
+
+@router.post("/studies/{study_id}/feedback-preview")
+def preview_feedback(study_id: int, payload: dict, db: Session = Depends(get_db)):
+    task_id = int(payload.get("task_id") or 0)
+    condition_group = normalize_condition(payload.get("condition_group", "G3"))
+    transcript = payload.get("transcript", "")
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    alignment = align_text(task.target_text, transcript)
+    features = {
+        "duration_seconds": 5,
+        "speech_rate_wpm": 120,
+        "long_pause_count": 0,
+        "valid_audio": bool(transcript.strip()),
+        "no_speech_detected": not bool(transcript.strip()),
+        "invalid_reasons": [],
+    }
+    score_result = compute_practice_score(alignment, features)
+    target_word = _target_word_from_alignment(task, alignment) or (_json(task.focus_words, "[]") or ["focus word"])[0]
+    target_phoneme = _focus_phoneme_for_word(task, target_word)
+    structured = feedback_from_issue(target_word, target_phoneme, task.speaking_target or "pronunciation_clarity")
+    structured["score_breakdown"] = score_result["score_breakdown"]
+    structured["score_note"] = score_result["score_note"]
+    feedback = filter_feedback_for_condition(condition_group, transcript, score_result["practice_score"], structured)
+    return {
+        "task_id": task.id,
+        "target_text": task.target_text,
+        "condition_group": condition_group,
+        "condition_label": feedback["condition_label"],
+        "feedback": feedback,
+    }
 
 
 @router.get("/tasks", response_model=List[TaskRead])
@@ -1472,9 +1549,16 @@ def export_attempts(db: Session = Depends(get_db)):
     for attempt in db.query(Attempt).order_by(Attempt.created_at.asc()).all():
         feedback = _json(attempt.feedback_json, "{}")
         policy = condition_policy(attempt.group_id)
+        user = db.query(User).filter(User.user_code == attempt.participant_id).first()
         rows.append({
             "student_id": attempt.participant_id,
+            "user_code": attempt.participant_id,
+            "class_id": user.class_id if user else "",
+            "group_id": user.group_id if user else attempt.group_id,
             "condition_group": feedback.get("condition_group", policy["condition_group"]),
+            "condition_label": feedback.get("condition_label", policy["friendly_label"]),
+            "score_available": attempt.assessment_score is not None,
+            "comment_available": bool(feedback.get("word_to_practise") or feedback.get("practice_suggestion")),
             "show_score": feedback.get("show_score", policy["show_score"]),
             "show_comment": feedback.get("show_comment", policy["show_comment"]),
             "attempt_number": attempt.attempt_number,
@@ -1595,9 +1679,16 @@ def export_full(db: Session = Depends(get_db)):
     for attempt in db.query(Attempt).order_by(Attempt.created_at.asc()).all():
         feedback = _json(attempt.feedback_json, "{}")
         policy = condition_policy(attempt.group_id)
+        user = db.query(User).filter(User.user_code == attempt.participant_id).first()
         attempts_rows.append({
             "student_id": attempt.participant_id,
+            "user_code": attempt.participant_id,
+            "class_id": user.class_id if user else "",
+            "group_id": user.group_id if user else attempt.group_id,
             "condition_group": feedback.get("condition_group", policy["condition_group"]),
+            "condition_label": feedback.get("condition_label", policy["friendly_label"]),
+            "score_available": attempt.assessment_score is not None,
+            "comment_available": bool(feedback.get("word_to_practise") or feedback.get("practice_suggestion")),
             "show_score": feedback.get("show_score", policy["show_score"]),
             "show_comment": feedback.get("show_comment", policy["show_comment"]),
             "attempt_number": attempt.attempt_number,
@@ -1630,14 +1721,22 @@ def export_full(db: Session = Depends(get_db)):
         attempt = db.query(Attempt).filter(Attempt.id == view.attempt_id).first()
         feedback = _json(attempt.feedback_json, "{}") if attempt else {}
         policy = condition_policy(attempt.group_id if attempt else "G3")
-        view_rows.append({
-            "student_id": view.participant_id,
-            "condition_group": feedback.get("condition_group", policy["condition_group"]),
-            "feedback_type": "score" if feedback.get("show_score") else "comment" if feedback.get("show_comment") else "practice",
-            "viewed_at": view.viewed_at.isoformat(),
-            "task_id": view.task_id,
-            "attempt_id": view.attempt_id,
-        })
+        feedback_types = []
+        if feedback.get("show_score"):
+            feedback_types.append("score")
+        if feedback.get("show_comment"):
+            feedback_types.append("comment")
+        if not feedback_types:
+            feedback_types.append("practice")
+        for feedback_type in feedback_types:
+            view_rows.append({
+                "student_id": view.participant_id,
+                "condition_group": feedback.get("condition_group", policy["condition_group"]),
+                "feedback_type": feedback_type,
+                "viewed_at": view.viewed_at.isoformat(),
+                "task_id": view.task_id,
+                "attempt_id": view.attempt_id,
+            })
     revision_rows = []
     for revision in db.query(RevisionEvent).order_by(RevisionEvent.created_at.asc()).all():
         attempt = db.query(Attempt).filter(Attempt.id == revision.new_attempt_id).first()
@@ -1701,7 +1800,20 @@ def export_tasks(db: Session = Depends(get_db)):
 
 @router.get("/exports/users")
 def export_users(db: Session = Depends(get_db)):
-    return _write_csv(db, "users", [clean_model(row) for row in db.query(User).all()])
+    rows = []
+    for user in db.query(User).order_by(User.id.asc()).all():
+        data = _user_dict(user, db)
+        rows.append({
+            "user_code": data["user_code"],
+            "role": data["role"],
+            "display_name": data["display_name"],
+            "class_id": data["class_id"],
+            "group_id": data["group_id"],
+            "condition_group": data.get("condition_group", ""),
+            "condition_label": data.get("condition_label", ""),
+            "active": data["active"],
+        })
+    return _write_csv(db, "users", rows)
 
 
 @router.get("/exports/classes")
@@ -1770,20 +1882,22 @@ def export_feedback_views(db: Session = Depends(get_db)):
         attempt = db.query(Attempt).filter(Attempt.id == view.attempt_id).first()
         feedback = _json(attempt.feedback_json, "{}") if attempt else {}
         policy = condition_policy(attempt.group_id if attempt else "G3")
+        feedback_types = []
         if feedback.get("show_score"):
-            feedback_type = "score"
-        elif feedback.get("show_comment"):
-            feedback_type = "comment"
-        else:
-            feedback_type = "practice"
-        rows.append({
-            "student_id": view.participant_id,
-            "condition_group": feedback.get("condition_group", policy["condition_group"]),
-            "feedback_type": feedback_type,
-            "viewed_at": view.viewed_at.isoformat(),
-            "task_id": view.task_id,
-            "attempt_id": view.attempt_id,
-        })
+            feedback_types.append("score")
+        if feedback.get("show_comment"):
+            feedback_types.append("comment")
+        if not feedback_types:
+            feedback_types.append("practice")
+        for feedback_type in feedback_types:
+            rows.append({
+                "student_id": view.participant_id,
+                "condition_group": feedback.get("condition_group", policy["condition_group"]),
+                "feedback_type": feedback_type,
+                "viewed_at": view.viewed_at.isoformat(),
+                "task_id": view.task_id,
+                "attempt_id": view.attempt_id,
+            })
     return _write_csv(db, "feedback_views", rows)
 
 
