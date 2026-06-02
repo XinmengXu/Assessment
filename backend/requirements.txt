@@ -10,3 +10,5 @@ httpx==0.27.2
 jiwer==3.0.5
 # Optional real ASR support. Install manually if desired:
 # faster-whisper==1.0.3
+# Optional data analysis helper. CSV export works without it:
+# pandas==2.0.3

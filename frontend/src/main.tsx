@@ -1,14 +1,16 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { BarChart3, BookOpen, ClipboardList, History, ShieldCheck } from "lucide-react";
+import { BarChart3, BookOpen, ClipboardCheck, ClipboardList, FlaskConical, History, ShieldCheck } from "lucide-react";
 import { api, Attempt, Task } from "./api/client";
 import { LearnerPractice } from "./pages/LearnerPractice";
 import { AttemptHistory } from "./pages/AttemptHistory";
 import { Dashboard } from "./pages/Dashboard";
 import { TaskManagement } from "./pages/TaskManagement";
+import { AnnotationReview } from "./pages/AnnotationReview";
+import { StudyDesign } from "./pages/StudyDesign";
 import "./styles.css";
 
-type Page = "practice" | "history" | "dashboard" | "tasks";
+type Page = "practice" | "history" | "dashboard" | "tasks" | "annotations" | "study";
 
 function App() {
   const [page, setPage] = useState<Page>("practice");
@@ -37,6 +39,8 @@ function App() {
       ["history", History, "History"],
       ["dashboard", BarChart3, "Dashboard"],
       ["tasks", ClipboardList, "Tasks"],
+      ["annotations", ClipboardCheck, "Annotations"],
+      ["study", FlaskConical, "Study"],
     ] as const,
     [],
   );
@@ -72,10 +76,15 @@ function App() {
             <input value={participantId} onChange={(event) => setParticipantId(event.target.value)} />
           </label>
           <label>
-            Group
+            Condition
             <select value={groupId} onChange={(event) => setGroupId(event.target.value)}>
+              <option value="assessment_only">A assessment-only</option>
+              <option value="transcript_only">B transcript-only</option>
+              <option value="score_only">C score-only</option>
               <option value="explainable">explainable</option>
-              <option value="control">control</option>
+              <option value="adaptive">E adaptive</option>
+              <option value="human_validated">F human-validated</option>
+              <option value="llm_verbalized">G LLM verbalized</option>
             </select>
           </label>
           <label>
@@ -96,6 +105,8 @@ function App() {
         {page === "history" && <AttemptHistory participantId={participantId} latestAttempt={latestAttempt} />}
         {page === "dashboard" && <Dashboard />}
         {page === "tasks" && <TaskManagement tasks={tasks} onTasks={setTasks} />}
+        {page === "annotations" && <AnnotationReview />}
+        {page === "study" && <StudyDesign />}
       </main>
     </div>
   );

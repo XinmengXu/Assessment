@@ -2,11 +2,17 @@ export const API_BASE = import.meta.env.VITE_API_BASE || "/api";
 
 export type Task = {
   id: number;
+  task_code?: string;
+  task_type?: string;
   target_text: string;
+  issue_types?: string[];
   focus_words: string[];
   speaking_target: string;
   difficulty: string;
   model_audio_path: string;
+  feedback_allowed?: boolean;
+  revision_allowed?: boolean;
+  active?: boolean;
   created_at: string;
 };
 
@@ -25,6 +31,11 @@ export type Attempt = {
   substitutions: { expected: string; heard: string }[];
   long_pause_count: number;
   feedback_type: string;
+  feedback_use_state?: string;
+  feedback_viewed?: boolean;
+  re_recorded?: boolean;
+  task_type?: string;
+  condition?: string;
   feedback: Record<string, string | number>;
   created_at: string;
   target_text: string;
@@ -47,6 +58,7 @@ type Summary = {
 
 const TASK_KEY = "speechFeedbackDemoTasks";
 const ATTEMPT_KEY = "speechFeedbackDemoAttempts";
+const ANNOTATION_KEY = "speechFeedbackDemoAnnotations";
 
 const defaultTasks: Task[] = [
   ["The thin path winds through three quiet fields.", ["thin", "through", "three"], "theta and rhythm", "medium"],
@@ -112,6 +124,13 @@ async function demoApi<T>(path: string, init?: RequestInit): Promise<T> {
   if (path.startsWith("/tasks/") && init?.method === "PUT") return updateTask(path, init) as T;
   if (path === "/attempts/analyze" && init?.method === "POST") return analyzeAttempt(init) as T;
   if (path.startsWith("/attempts/")) return attemptsFor(path.split("/").pop() || "") as T;
+  if (path === "/studies" && init?.method === "POST") return { id: 2, study_name: "New Study", description: "Browser-local demo study.", active: true } as T;
+  if (path === "/studies") return [{ id: 1, study_name: "Default Speech-AI Feedback Study", description: "Browser-local demo study.", active: true }] as T;
+  if (path.endsWith("/conditions")) return demoConditions() as T;
+  if (path.endsWith("/assign")) return { ok: true } as T;
+  if (path === "/annotations/pending") return getAttempts().slice().reverse() as T;
+  if (path === "/annotations" && init?.method === "POST") return saveDemoAnnotation(init) as T;
+  if (path === "/annotations/report") return [] as T;
   if (path.startsWith("/dashboard/summary")) return dashboardSummary(path) as T;
   throw new Error("Demo endpoint not implemented.");
 }
@@ -123,6 +142,33 @@ function getTasks() {
     return defaultTasks;
   }
   return JSON.parse(raw) as Task[];
+}
+
+function demoConditions() {
+  return [
+    ["assessment_only", "Condition A: Assessment-only", false, false, false, false],
+    ["transcript_only", "Condition B: Transcript-only", true, false, false, true],
+    ["score_only", "Condition C: Score-only", true, true, false, true],
+    ["explainable", "Condition D: Explainable rule-based feedback", true, true, true, true],
+    ["adaptive", "Condition E: Adaptive learner-model feedback", true, true, true, true],
+    ["human_validated", "Condition F: Human-validated feedback", true, true, false, true],
+    ["llm_verbalized", "Condition G: LLM verbalized feedback", true, true, true, true],
+  ].map(([condition_code, condition_name, show_transcript, show_score, show_diagnosis, revision_allowed], index) => ({
+    id: index + 1,
+    condition_code,
+    condition_name,
+    show_transcript,
+    show_score,
+    show_diagnosis,
+    revision_allowed,
+  }));
+}
+
+function saveDemoAnnotation(init: RequestInit) {
+  const annotations = JSON.parse(localStorage.getItem(ANNOTATION_KEY) || "[]");
+  const annotation = { id: annotations.length + 1, created_at: new Date().toISOString(), ...JSON.parse(String(init.body)) };
+  localStorage.setItem(ANNOTATION_KEY, JSON.stringify([...annotations, annotation]));
+  return annotation;
 }
 
 function saveTasks(tasks: Task[]) {

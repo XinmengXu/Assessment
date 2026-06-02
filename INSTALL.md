@@ -43,6 +43,10 @@ pip install faster-whisper
 
 Then set `ASR_MODE = "faster_whisper"` in `backend/app/config.py`.
 
+## Optional LLM Verbalizer
+
+LLM verbalization is disabled by default. Copy `.env.example` to `.env`, set `LLM_VERBALIZER_ENABLED=true`, and provide an API key only if you intentionally add a backend verbalizer adapter. The LLM must only rewrite structured diagnosis; it should not create the diagnosis.
+
 ## CPU-Only Notes
 
 - Use smaller models such as `tiny`, `base`, or `small`.

@@ -5,7 +5,9 @@ from pydantic import BaseModel
 
 class ParticipantCreate(BaseModel):
     participant_id: str
-    group_id: str
+    group_id: str = "explainable"
+    study_id: int = 1
+    condition_id: int = 4
     session_id: Optional[str] = ""
 
 
@@ -17,11 +19,17 @@ class ParticipantRead(ParticipantCreate):
 
 
 class TaskBase(BaseModel):
+    task_code: str = ""
+    task_type: str = "practice"
     target_text: str
+    issue_types: List[str] = []
     focus_words: List[str] = []
     speaking_target: str = ""
     difficulty: str = "medium"
     model_audio_path: str = ""
+    feedback_allowed: bool = True
+    revision_allowed: bool = True
+    active: bool = True
 
 
 class TaskCreate(TaskBase):
@@ -69,3 +77,18 @@ class DashboardSummary(BaseModel):
     average_improvement_first_to_latest: float
     feedback_views: int
     revision_events: int
+
+
+class AnnotationCreate(BaseModel):
+    annotator_id: str = ""
+    attempt_id: int
+    transcript_acceptable: bool = True
+    human_missing_words: List[str] = []
+    human_unclear_words: List[str] = []
+    human_substitutions: List[Dict[str, str]] = []
+    human_long_pause_count: int = 0
+    pronunciation_rating: float = 0
+    fluency_rating: float = 0
+    comprehensibility_rating: float = 0
+    feedback_appropriate: bool = True
+    notes: str = ""

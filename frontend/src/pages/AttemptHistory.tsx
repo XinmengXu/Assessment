@@ -25,20 +25,24 @@ export function AttemptHistory({ participantId, latestAttempt }: { participantId
         <table>
           <thead>
             <tr>
-              <th>Task</th><th>Attempt</th><th>Time</th><th>Target</th><th>Transcript</th><th>Score</th><th>WPM</th><th>Feedback</th><th>Delta</th>
+              <th>Task</th><th>Type</th><th>Attempt</th><th>Time</th><th>Condition</th><th>Target</th><th>Transcript</th><th>Score</th><th>Feedback</th><th>Use</th><th>Viewed</th><th>Re-recorded</th><th>Delta</th>
             </tr>
           </thead>
           <tbody>
             {attempts.map((attempt) => (
               <tr key={attempt.id}>
                 <td>{attempt.task_id}</td>
+                <td>{attempt.task_type}</td>
                 <td>{attempt.attempt_number}</td>
                 <td>{new Date(attempt.created_at).toLocaleString()}</td>
+                <td>{attempt.condition || attempt.group_id}</td>
                 <td>{attempt.target_text}</td>
                 <td>{attempt.asr_transcript}</td>
                 <td>{attempt.score}</td>
-                <td>{attempt.speech_rate_wpm}</td>
                 <td>{attempt.feedback_type}</td>
+                <td>{attempt.feedback_use_state}</td>
+                <td>{attempt.feedback_viewed ? "yes" : "no"}</td>
+                <td>{attempt.re_recorded ? "yes" : "no"}</td>
                 <td>{attempt.improvement > 0 ? "+" : ""}{attempt.improvement}</td>
               </tr>
             ))}

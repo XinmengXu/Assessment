@@ -93,7 +93,7 @@ export function LearnerPractice({ participantId, groupId, sessionId, tasks, onAt
           <select value={task?.id || ""} onChange={(event) => setTaskId(Number(event.target.value))}>
             {tasks.map((item) => (
               <option value={item.id} key={item.id}>
-                Task {item.id}: {item.difficulty}
+                {item.task_code || `Task ${item.id}`}: {item.task_type || "practice"} · {item.difficulty}
               </option>
             ))}
           </select>
@@ -103,7 +103,9 @@ export function LearnerPractice({ participantId, groupId, sessionId, tasks, onAt
           <article className="sentence-card">
             <span>{task.speaking_target}</span>
             <h3>{task.target_text}</h3>
+            <p>Task type: {task.task_type || "practice"} · Revision {task.revision_allowed === false ? "not allowed" : "allowed"} · Feedback {task.feedback_allowed === false ? "hidden" : "available"}</p>
             <p>Focus: {task.focus_words.join(", ") || "general intelligibility"}</p>
+            {task.issue_types?.length ? <p>Issue focus: {task.issue_types.join(", ")}</p> : null}
           </article>
         )}
 
@@ -136,7 +138,7 @@ export function LearnerPractice({ participantId, groupId, sessionId, tasks, onAt
 
         <button className="primary submit" disabled={busy} onClick={submit}>
           <RotateCcw size={18} />
-          {busy ? "Analyzing..." : attempt ? "Submit revision" : "Analyze attempt"}
+          {busy ? "Analyzing..." : attempt && task?.revision_allowed !== false ? "Submit revision" : "Analyze attempt"}
         </button>
         {error && <div className="alert">{error}</div>}
       </div>
@@ -161,6 +163,7 @@ function FeedbackPanel({ attempt, groupId }: { attempt: Attempt | null; groupId:
       <div className="score-ring">{feedback.overall_score}</div>
       <h2>Automated Feedback</h2>
       <p className="transcript">Transcript: {attempt.asr_transcript}</p>
+      {!attempt.asr_transcript && <p className="transcript">Transcript hidden by the assigned research condition.</p>}
       <div className="metrics-grid">
         <Metric label="Duration" value={`${attempt.duration_seconds}s`} />
         <Metric label="Speech rate" value={`${attempt.speech_rate_wpm} wpm`} />
@@ -169,6 +172,10 @@ function FeedbackPanel({ attempt, groupId }: { attempt: Attempt | null; groupId:
       </div>
       {groupId === "control" ? (
         <div className="feedback-box"><strong>Comment</strong><p>{feedback.comment}</p></div>
+      ) : feedback.feedback_type === "assessment_only" ? (
+        <div className="feedback-box"><strong>Assessment Mode</strong><p>{feedback.comment}</p></div>
+      ) : feedback.feedback_type === "transcript_only" ? (
+        <div className="feedback-box"><strong>Transcript Only</strong><p>{feedback.comment}</p></div>
       ) : (
         <>
           <Box title="Diagnosis" text={String(feedback.diagnosis)} />

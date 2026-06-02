@@ -1,17 +1,19 @@
-# Explainable Speech-AI Feedback App
+# Speech-AI Feedback Research Platform
 
-A runnable research prototype for studying automated speaking feedback in second-language read-aloud practice. The app compares score-only feedback with explainable feedback that supports diagnosis, explanation, action guidance, revision, and continuity tracking.
+A runnable lightweight research platform for controlled education-AI experiments on second-language speaking feedback, feedback use, learner modelling, adaptive formative feedback, and human validation of speech-AI diagnosis.
 
 ## Main Features
 
 - Learners enter a participant ID, group, and session ID.
 - Learners select a read-aloud task, record in the browser, or upload audio.
 - Backend stores audio locally and analyzes transcript match, duration, speech rate, long pauses, missing words, substitutions, and score.
-- Control group receives score-only feedback.
-- Explainable group receives diagnosis, explanation, action guidance, and revision prompts.
+- Experimental conditions A-G are supported: assessment-only, transcript-only, score-only, explainable, adaptive, human-validated, and optional LLM-verbalized feedback.
+- Explainable and adaptive groups receive diagnosis, explanation, action guidance, revision goals, and metacognitive prompts.
 - Attempt history shows multiple attempts and improvement indicators.
-- Researcher dashboard reports aggregate study statistics.
-- CSV exports support full, participant-level, and task-level analysis.
+- Researcher dashboard reports condition-level statistics, feedback use, learner state, issue types, and revision events.
+- Annotation Review supports human validation of automatic diagnosis.
+- Study Design supports default conditions and participant assignment.
+- CSV exports support participants, attempts, feedback, revisions, learner states, annotations, tasks, and study design.
 - Mock ASR mode runs without downloading a speech model.
 - Optional faster-whisper integration can be enabled for real ASR.
 
@@ -20,6 +22,8 @@ A runnable research prototype for studying automated speaking feedback in second
 - Frontend: React, Vite, TypeScript, MediaRecorder API
 - Backend: FastAPI, SQLite, SQLAlchemy, Pydantic
 - Analysis: modular ASR, text alignment, audio features, scoring, feedback generation
+- Learner model: interpretable rule-based state update
+- Validation: human annotation plus simple agreement report
 - Storage: local SQLite database and local audio/export folders under `data/`
 
 ## Run Backend
@@ -71,11 +75,21 @@ CPU mode uses `int8` by default in `app/analysis/asr.py`. If the model cannot lo
 
 Use the dashboard buttons or these endpoints:
 
-- `GET /exports/full`
-- `GET /exports/participant/{participant_id}`
-- `GET /exports/tasks`
+- `GET /api/exports/full`
+- `GET /api/exports/participants`
+- `GET /api/exports/attempts`
+- `GET /api/exports/feedback`
+- `GET /api/exports/revisions`
+- `GET /api/exports/learner-states`
+- `GET /api/exports/annotations`
+- `GET /api/exports/study-design`
+- `GET /api/exports/tasks`
 
 Exports are also written under `data/exports`.
+
+## Important Research Note
+
+The automatic score is an interpretable practice indicator, not a validated proficiency score. Human expert ratings are required for final learning-outcome claims.
 
 ## Tests
 

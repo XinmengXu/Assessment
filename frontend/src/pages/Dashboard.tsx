@@ -4,12 +4,16 @@ import { api, exportUrl } from "../api/client";
 
 type Summary = {
   participants: number;
+  tasks: number;
   attempts: number;
+  completion_rate_by_condition?: { condition: string; attempts: number; average_score: number; feedback_view_rate: number; re_recording_rate: number }[];
   average_attempts_per_task: number;
   average_word_match_score: number;
   average_speech_rate_wpm: number;
   common_missing_words: { word: string; count: number }[];
+  common_issue_types?: { issue_type: string; count: number }[];
   common_substitutions: { substitution: string; count: number }[];
+  feedback_policy_trigger_distribution?: { feedback_type: string; count: number }[];
   average_improvement_first_to_latest: number;
   feedback_views: number;
   revision_events: number;
@@ -38,7 +42,12 @@ export function Dashboard() {
         </div>
         <div className="actions">
           <a className="button-link" href={exportUrl("/exports/full")}><Download size={18} /> Full CSV</a>
-          <a className="button-link" href={exportUrl("/exports/tasks")}><Download size={18} /> Tasks CSV</a>
+          <a className="button-link" href={exportUrl("/exports/participants")}><Download size={18} /> Participants</a>
+          <a className="button-link" href={exportUrl("/exports/attempts")}><Download size={18} /> Attempts</a>
+          <a className="button-link" href={exportUrl("/exports/feedback")}><Download size={18} /> Feedback</a>
+          <a className="button-link" href={exportUrl("/exports/revisions")}><Download size={18} /> Revisions</a>
+          <a className="button-link" href={exportUrl("/exports/learner-states")}><Download size={18} /> States</a>
+          <a className="button-link" href={exportUrl("/exports/annotations")}><Download size={18} /> Annotations</a>
         </div>
       </div>
       <div className="filters">
@@ -50,6 +59,7 @@ export function Dashboard() {
         <>
           <div className="stats-grid">
             <Stat label="Participants" value={summary.participants} />
+            <Stat label="Tasks" value={summary.tasks} />
             <Stat label="Attempts" value={summary.attempts} />
             <Stat label="Attempts/task" value={summary.average_attempts_per_task} />
             <Stat label="Word match" value={`${summary.average_word_match_score}%`} />
@@ -60,7 +70,14 @@ export function Dashboard() {
           </div>
           <div className="two-col">
             <List title="Common Missing Words" items={summary.common_missing_words.map((item) => `${item.word}: ${item.count}`)} />
-            <List title="Common Substitutions" items={summary.common_substitutions.map((item) => `${item.substitution}: ${item.count}`)} />
+            <List title="Common Issue Types" items={(summary.common_issue_types || []).map((item) => `${item.issue_type}: ${item.count}`)} />
+            <List title="Feedback Policy Triggers" items={(summary.feedback_policy_trigger_distribution || []).map((item) => `${item.feedback_type}: ${item.count}`)} />
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Condition</th><th>Attempts</th><th>Avg score</th><th>Feedback view rate</th><th>Re-recording rate</th></tr></thead>
+              <tbody>{(summary.completion_rate_by_condition || []).map((row) => <tr key={row.condition}><td>{row.condition}</td><td>{row.attempts}</td><td>{row.average_score}</td><td>{row.feedback_view_rate}</td><td>{row.re_recording_rate}</td></tr>)}</tbody>
+            </table>
           </div>
         </>
       )}
