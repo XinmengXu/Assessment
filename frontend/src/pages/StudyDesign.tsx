@@ -14,7 +14,7 @@ export function StudyDesign() {
 
   function load() {
     api<Study[]>("/studies").then(setStudies);
-    api<Condition[]>("/studies/1/conditions").then((items) => setConditions(items.filter((item) => item.condition_code !== "llm_verbalized")));
+    api<Condition[]>("/studies/1/conditions").then(setConditions);
   }
 
   useEffect(load, []);
