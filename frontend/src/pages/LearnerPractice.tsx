@@ -13,6 +13,7 @@ type Props = {
 
 export function LearnerPractice({ participantId, groupId, sessionId, tasks, userRole = "student", onAttempt }: Props) {
   const [taskId, setTaskId] = useState<number>(tasks[0]?.id || 1);
+  const [selectedMode, setSelectedMode] = useState(groupId || "G3");
   const [recording, setRecording] = useState(false);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [audioName, setAudioName] = useState("recording.webm");
@@ -62,7 +63,8 @@ export function LearnerPractice({ participantId, groupId, sessionId, tasks, user
     setError("");
     const data = new FormData();
     data.append("participant_id", participantId);
-    data.append("group_id", groupId);
+    data.append("group_id", selectedMode === "teacher_feedback" || selectedMode === "peer_feedback" ? "G3" : selectedMode);
+    if (selectedMode === "teacher_feedback" || selectedMode === "peer_feedback") data.append("workflow_request", selectedMode);
     data.append("session_id", sessionId);
     data.append("task_id", String(task.id));
     if (isDemoMode()) data.append("transcript_hint", transcriptHint);
@@ -88,6 +90,19 @@ export function LearnerPractice({ participantId, groupId, sessionId, tasks, user
           </div>
           {attempt && <span className="pill">Attempt {attempt.attempt_number}</span>}
         </div>
+
+        <label>
+          Practice mode
+          <select value={selectedMode} onChange={(event) => setSelectedMode(event.target.value)}>
+            <option value="G0">Practice</option>
+            <option value="G1">Score feedback</option>
+            <option value="G2">Comment feedback</option>
+            <option value="G3">Score and comment feedback</option>
+            <option value="teacher_feedback">Send to teacher for review</option>
+            <option value="peer_feedback">Send to peer reviewer</option>
+          </select>
+        </label>
+        <p className="small-note">{modeHelp(selectedMode)}</p>
 
         <label>
           Speaking task
@@ -147,11 +162,20 @@ export function LearnerPractice({ participantId, groupId, sessionId, tasks, user
       </div>
 
       <div>
-        <FeedbackPanel attempt={attempt} groupId={groupId} />
+        <FeedbackPanel attempt={attempt} groupId={selectedMode} />
         {userRole === "researcher_admin" ? <DebugPanel attempt={attempt} audioBlob={audioBlob} audioName={audioName} /> : null}
       </div>
     </section>
   );
+}
+
+function modeHelp(mode: string) {
+  if (mode === "G0") return "TTS and recording only. No AI score or comment will be shown.";
+  if (mode === "G1") return "Shows the practice clarity score only.";
+  if (mode === "G2") return "Shows the practice comment only.";
+  if (mode === "teacher_feedback") return "Uses score and comment feedback, then flags this attempt for teacher review.";
+  if (mode === "peer_feedback") return "Uses score and comment feedback, then creates a peer review task.";
+  return "Shows both practice clarity score and practice comment.";
 }
 
 function TtsControls({ sentence, focusWords, ttsStatus }: { sentence: string; focusWords: string[]; ttsStatus: string }) {
@@ -190,6 +214,7 @@ function FeedbackPanel({ attempt, groupId }: { attempt: Attempt | null; groupId:
       <h2>Automated Feedback</h2>
       <p className="small-note">Practice clarity score, not a validated speaking proficiency score.</p>
       {feedback.demo_notice ? <div className="demo-inline">{String(feedback.demo_notice)}</div> : null}
+      {feedback.workflow_request ? <div className="feedback-box"><strong>Review request</strong><p>{String(feedback.workflow_request_label || "This attempt has been sent for additional review.")}</p></div> : null}
       {attempt.asr_transcript ? (
         <p className="transcript">Transcript: {attempt.asr_transcript}</p>
       ) : attempt.feedback_type === "invalid_audio" ? (

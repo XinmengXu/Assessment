@@ -371,6 +371,7 @@ function analyzeAttempt(init: RequestInit) {
   const audioFile = audio instanceof File ? audio : null;
   const participantId = String(form.get("participant_id") || "sample001");
   const groupId = normalizeDemoGroup(String(form.get("group_id") || "G3"));
+  const workflowRequest = String(form.get("workflow_request") || "");
   const taskId = Number(form.get("task_id") || 1);
   const task = getTasks().find((item) => item.id === taskId) || getTasks()[0];
   const transcript = String(form.get("transcript_hint") || "");
@@ -384,6 +385,10 @@ function analyzeAttempt(init: RequestInit) {
     : scoreBreakdownFor(alignment.word_match_score, alignment.missing_words.length, alignment.substitutions.length, speechRate, longPauses);
   const score = noSpeech ? null : scoreBreakdown.practice_score;
   const feedback = noSpeech ? invalidDemoFeedback(scoreBreakdown) : feedbackFor(groupId, score || 0, alignment, speechRate, longPauses, scoreBreakdown);
+  if (workflowRequest === "teacher_feedback" || workflowRequest === "peer_feedback") {
+    feedback.workflow_request = workflowRequest;
+    feedback.workflow_request_label = workflowRequest === "teacher_feedback" ? "Sent to teacher for review." : "Sent to peer reviewer.";
+  }
   const attempts = getAttempts();
   const previousForTask = attempts.filter((item) => item.participant_id === participantId && item.task_id === taskId);
   const firstScore = previousForTask.find((item) => item.score !== null)?.score ?? score ?? 0;

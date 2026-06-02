@@ -40,6 +40,15 @@ The normal visible experimental groups are:
 
 Do not use labels such as human-validated feedback, teacher-orchestrated feedback, adaptive feedback, or LLM-verbalized feedback as student-facing or teacher-facing condition names. Teacher and peer feedback are optional workflows controlled separately from the G0-G3 comparison.
 
+Student Practice mode selector:
+
+- `Practice`: runs G0.
+- `Score feedback`: runs G1.
+- `Comment feedback`: runs G2.
+- `Score and comment feedback`: runs G3.
+- `Send to teacher for review`: runs G3 feedback display and records a teacher-review request.
+- `Send to peer reviewer`: runs G3 feedback display and creates a peer review assignment when a peer reviewer exists.
+
 Assign a student to a group:
 
 ```powershell

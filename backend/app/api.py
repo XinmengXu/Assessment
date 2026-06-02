@@ -1020,6 +1020,7 @@ def analyze_attempt(
     study_id: int = Form(1),
     session_id: str = Form(""),
     transcript_hint: str = Form(""),
+    workflow_request: str = Form(""),
     audio: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
@@ -1099,6 +1100,10 @@ def analyze_attempt(
         feedback = filter_feedback_for_condition(condition_key, transcript, score, structured)
     if not task.feedback_allowed and not features.get("no_speech_detected"):
         feedback = filter_feedback_for_condition("G0", transcript, score, structured)
+    workflow_request = (workflow_request or "").strip()
+    if workflow_request in ["teacher_feedback", "peer_feedback"] and not features.get("no_speech_detected"):
+        feedback["workflow_request"] = workflow_request
+        feedback["workflow_request_label"] = "Sent to teacher for review." if workflow_request == "teacher_feedback" else "Sent to peer reviewer."
     feedback_type = feedback["feedback_type"]
     feedback_shown = feedback_type != "practice_only"
 
@@ -1134,6 +1139,34 @@ def analyze_attempt(
     db.add(attempt)
     db.commit()
     db.refresh(attempt)
+
+    if workflow_request == "teacher_feedback":
+        db.add(TeacherOrchestrationEvent(
+            study_id=attempt.study_id,
+            condition_id=attempt.condition_id,
+            teacher_id="",
+            class_id=getattr(participant, "class_id", "") or "",
+            participant_id_optional=participant_id,
+            task_id=task_id,
+            attempt_id=attempt.id,
+            issue_type=(issues[0] if issues else ""),
+            recommended_action="Student requested teacher review for this attempt.",
+            teacher_action_taken="student_requested_teacher_feedback",
+            notes="Created from student-selected review mode.",
+            system_version_id=getattr(attempt, "system_version_id", 1),
+        ))
+    elif workflow_request == "peer_feedback":
+        peer = db.query(User).filter(User.role == "peer_reviewer", User.active == True).order_by(User.id.asc()).first()  # noqa: E712
+        if peer:
+            exists = db.query(PeerReviewAssignment).filter(PeerReviewAssignment.reviewer_user_id == peer.id, PeerReviewAssignment.attempt_id == attempt.id).first()
+            if not exists:
+                db.add(PeerReviewAssignment(
+                    reviewer_user_id=peer.id,
+                    participant_id=participant_id,
+                    task_id=task_id,
+                    attempt_id=attempt.id,
+                    status="assigned",
+                ))
 
     first_issue = issues[0] if issues else "generic_unclear_word"
     item = FeedbackItem(

@@ -35,6 +35,21 @@ def submit(group):
     )
 
 
+def submit_with_workflow(workflow_request):
+    task = client.get("/api/tasks").json()[0]
+    return client.post(
+        "/api/attempts/analyze",
+        data={
+            "participant_id": f"student_{workflow_request}_test",
+            "group_id": "G3",
+            "workflow_request": workflow_request,
+            "task_id": str(task["id"]),
+            "transcript_hint": task["target_text"],
+        },
+        files={"audio": ("speech.wav", wav_bytes(), "audio/wav")},
+    )
+
+
 def test_g0_g1_g2_g3_feedback_visibility():
     expected = {
         "G0": (False, False),
@@ -123,3 +138,23 @@ def test_teacher_ui_is_student_first_static_check():
     assert "Student List" in text
     assert "Student Detail" in text
     assert "Review one selected student attempt at a time" in text
+
+
+def test_student_ui_has_six_mode_options_static_check():
+    repo_root = Path(__file__).resolve().parents[2]
+    text = (repo_root / "frontend" / "src" / "pages" / "LearnerPractice.tsx").read_text(encoding="utf-8")
+    for value in ["G0", "G1", "G2", "G3", "teacher_feedback", "peer_feedback"]:
+        assert f'value="{value}"' in text
+
+
+def test_student_teacher_and_peer_review_modes_create_requests():
+    teacher = submit_with_workflow("teacher_feedback")
+    assert teacher.status_code == 200
+    assert teacher.json()["feedback"]["workflow_request"] == "teacher_feedback"
+
+    peer = submit_with_workflow("peer_feedback")
+    assert peer.status_code == 200
+    assert peer.json()["feedback"]["workflow_request"] == "peer_feedback"
+    assignments = client.get("/api/exports/peer-review-assignments")
+    assert assignments.status_code == 200
+    assert "student_peer_feedback_test" in assignments.text

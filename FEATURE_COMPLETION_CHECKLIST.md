@@ -9,6 +9,7 @@ Visible features must have backend logic, database storage, frontend UI, role co
 - Four-group feedback-information experiment: complete. Visible groups are `G0 practice_only`, `G1 score_only`, `G2 comment_only`, and `G3 score_plus_comment`.
 - Study Setup experiment group workflow: complete. Admin can activate G0-G3, inspect group cards, assign one student, bulk import assignments, export assignments, and preview student-facing output by group.
 - Group-aware student feedback display: complete. G0 shows neither score nor comment; G1 shows score only; G2 shows comment only; G3 shows score and comment.
+- Student-selectable practice mode: complete. Student accounts now show six options: G0, G1, G2, G3, send to teacher review, and send to peer review.
 - Student read-aloud practice: complete. Audio is sent to FastAPI `/attempts/analyze` when a backend is connected.
 - Backend status and demo warning: complete. GitHub Pages is demo-only unless `VITE_API_BASE` points to a live backend.
 - ASR-supported practice clarity scoring: complete. Limitation: score is formative, not a validated proficiency score.
