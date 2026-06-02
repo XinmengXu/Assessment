@@ -15,7 +15,7 @@ type Page = "practice" | "history" | "dashboard" | "tasks" | "annotations" | "st
 function App() {
   const [page, setPage] = useState<Page>("practice");
   const [participantId, setParticipantId] = useState(localStorage.getItem("participantId") || "sample001");
-  const [groupId, setGroupId] = useState(localStorage.getItem("groupId") || "explainable_diagnostic_feedback");
+  const [groupId, setGroupId] = useState(localStorage.getItem("groupId") || "explainable_word_sound_feedback");
   const [sessionId, setSessionId] = useState(localStorage.getItem("sessionId") || "pilot-session");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [latestAttempt, setLatestAttempt] = useState<Attempt | null>(null);
@@ -85,9 +85,9 @@ function App() {
               <option value="assessment_only">A assessment-only</option>
               <option value="transcript_only">B transcript-only</option>
               <option value="score_only">C score-only</option>
-              <option value="explainable_diagnostic_feedback">D explainable diagnostic feedback</option>
-              <option value="adaptive_diagnostic_feedback">E adaptive diagnostic feedback</option>
-              <option value="human_validated_feedback">F human-validated feedback</option>
+              <option value="explainable_word_sound_feedback">D explainable word/sound feedback</option>
+              <option value="adaptive_word_sound_feedback">E adaptive word/sound feedback</option>
+              <option value="human_validated_phoneme_feedback">F human-validated phoneme feedback</option>
               <option value="teacher_orchestrated_feedback">G teacher-orchestrated feedback</option>
             </select>
           </label>

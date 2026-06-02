@@ -18,6 +18,8 @@ This prototype exports CSV files from `data/exports`.
 - `target_text`: sentence or short passage to read aloud.
 - `issue_types_json`: expected issue categories.
 - `focus_words`: target words for practice or analysis.
+- `focus_phonemes_json`: target sounds for sound-level feedback.
+- `word_phoneme_map_json`: mapping from focus words to target sounds. Without this, sound-level feedback is unavailable.
 - `feedback_allowed`: whether learner feedback can be shown.
 - `revision_allowed`: whether re-recording is part of the task design.
 
@@ -101,8 +103,13 @@ This prototype exports CSV files from `data/exports`.
 
 ## Diagnosis Records
 
+- `diagnosis_level`: audio, word, phoneme, fluency, prosody, or learner_history.
+- `target_word`, `target_phoneme`, `observed_phoneme`: observed phoneme is null for ASR-only evidence.
+- `issue_type`, `speaking_target`, `severity`: pedagogical classification fields.
 - `allowed_feedback_strength`: `cautious`, `direct`, or `validated`.
 - `feedback_text`: learner-safe diagnosis text. ASR-only records must use cautious wording.
+- `pedagogical_interpretation`: why this evidence matters for learning.
+- `requires_human_validation`: whether stronger claims need review.
 
 ## External Assessment Scores
 

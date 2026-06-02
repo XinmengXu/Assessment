@@ -9,7 +9,7 @@ export function StudyDesign() {
   const [studies, setStudies] = useState<Study[]>([]);
   const [conditions, setConditions] = useState<Condition[]>([]);
   const [participantId, setParticipantId] = useState("");
-  const [condition, setCondition] = useState("explainable_diagnostic_feedback");
+  const [condition, setCondition] = useState("explainable_word_sound_feedback");
   const [importResult, setImportResult] = useState<{ imported?: number; errors?: { row: number; reason: string }[] } | null>(null);
 
   function load() {

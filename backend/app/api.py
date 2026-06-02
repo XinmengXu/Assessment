@@ -47,7 +47,9 @@ from .services.feedback.feedback_policy import (
 from .services.feedback.issue_taxonomy import issue_records_for_alignment
 from .services.asr_sanity import check_asr_sanity
 from .services.learner_model.state_update import update_learner_state
+from .services.pronunciation.evidence_builder import build_rule_based_evidence
 from .services.validation.agreement import annotation_agreement
+from .services.verbalization.template_verbalizer import feedback_from_issue, feedback_from_diagnosis
 
 
 router = APIRouter()
@@ -167,7 +169,30 @@ def _focus_phoneme_for_word(task, word):
     return phonemes[0] if phonemes else ""
 
 
+def _target_word_from_alignment(task, alignment):
+    focus = {word.lower() for word in _json(task.focus_words, "[]")}
+    for word in alignment.get("missing_words", []):
+        candidate = word.lower()
+        if not focus or candidate in focus:
+            return candidate
+    for item in alignment.get("substitutions", []):
+        candidate = item.get("expected", "").lower()
+        if candidate and (not focus or candidate in focus):
+            return candidate
+    return ""
+
+
 def _create_asr_supported_records(db, attempt, task, alignment, issue_records):
+    rule_evidence = build_rule_based_evidence(task, alignment)
+    diagnosis_items = rule_evidence.get("phoneme_diagnosis") or []
+    if diagnosis_items:
+        issue_records = [{
+            "issue_type": (issue_records[0].get("issue_type") if issue_records else "generic_unclear_word"),
+            "target_word": item["target_word"],
+            "evidence": item["evidence_source"],
+            "severity": "moderate",
+            "extra": item,
+        } for item in diagnosis_items]
     for issue in issue_records:
         target_word = issue.get("target_word") or (alignment.get("missing_words") or [""])[0]
         target_phoneme = _focus_phoneme_for_word(task, target_word)
@@ -199,11 +224,17 @@ def _create_asr_supported_records(db, attempt, task, alignment, issue_records):
             task_id=attempt.task_id,
             attempt_id=attempt.id,
             evidence_level="asr_supported_cue",
+            diagnosis_level="phoneme" if target_phoneme else "word",
             evidence_source="asr_alignment",
             confidence_level="medium" if target_word else "low",
             target_word=target_word,
             target_phoneme=target_phoneme,
             observed_phoneme=None,
+            issue_type=issue.get("issue_type", "generic_unclear_word"),
+            speaking_target=task.speaking_target or "pronunciation_clarity",
+            severity="moderate",
+            pedagogical_interpretation=text,
+            requires_human_validation=False,
             allowed_feedback_strength="cautious",
             feedback_text=text,
             system_version_id=getattr(attempt, "system_version_id", 1),
@@ -453,6 +484,21 @@ def analyze_attempt(
     score = score_result["practice_score"]
     issues = _detect_issue_types(task, alignment, features)
     structured = generate_feedback("explainable", score or 0, task.target_text, transcript, alignment, features)
+    target_word = _target_word_from_alignment(task, alignment)
+    target_phoneme = _focus_phoneme_for_word(task, target_word)
+    if target_word:
+        repeated = False
+        if target_phoneme:
+            repeated = db.query(DiagnosisRecord).filter(
+                DiagnosisRecord.participant_id == participant_id,
+                DiagnosisRecord.target_phoneme == target_phoneme,
+            ).count() >= 1
+        structured.update(feedback_from_issue(
+            target_word,
+            target_phoneme,
+            task.speaking_target or "pronunciation_clarity",
+            repeated=repeated and condition_key == "adaptive_word_sound_feedback",
+        ))
     structured["practice_score"] = score
     structured["score_breakdown"] = score_result["score_breakdown"]
     structured["score_note"] = score_result["score_note"]
@@ -630,6 +676,39 @@ def edit_feedback(feedback_item_id: int, payload: dict, db: Session = Depends(ge
     item.revision_goal = payload.get("revision_goal", item.revision_goal)
     attempt = db.query(Attempt).filter(Attempt.id == item.attempt_id).first()
     if attempt and payload.get("observed_phoneme"):
+        target_word = payload.get("target_word", item.issue_type)
+        target_phoneme = payload.get("target_phoneme", "")
+        observed = payload.get("observed_phoneme")
+        validated_feedback = feedback_from_diagnosis(type("Record", (), {
+            "evidence_level": "human_validated_diagnosis",
+            "target_word": target_word,
+            "target_phoneme": target_phoneme,
+            "observed_phoneme": observed,
+            "speaking_target": payload.get("speaking_target", "pronunciation_clarity"),
+        })())
+        item.diagnosis = validated_feedback["diagnosis"]
+        item.explanation = validated_feedback["explanation"]
+        item.action_guidance = validated_feedback["action_guidance"]
+        item.revision_goal = validated_feedback["revision_goal"]
+        item.validated_feedback_json = json.dumps(validated_feedback)
+        db.add(PronunciationEvidence(
+            study_id=attempt.study_id,
+            condition_id=attempt.condition_id,
+            participant_id=attempt.participant_id,
+            task_id=attempt.task_id,
+            attempt_id=attempt.id,
+            source_name=payload.get("reviewer_id", "human_reviewer"),
+            evidence_level="human_validated_diagnosis",
+            score_level="phoneme",
+            target_word=target_word,
+            target_phoneme=target_phoneme,
+            observed_phoneme=observed,
+            score=payload.get("score", 0),
+            confidence=payload.get("confidence", 1.0),
+            issue_type=payload.get("issue_type", item.issue_type),
+            notes=payload.get("notes", ""),
+            system_version_id=getattr(attempt, "system_version_id", 1),
+        ))
         db.add(DiagnosisRecord(
             study_id=attempt.study_id,
             condition_id=attempt.condition_id,
@@ -639,11 +718,17 @@ def edit_feedback(feedback_item_id: int, payload: dict, db: Session = Depends(ge
             evidence_level="human_validated_diagnosis",
             evidence_source=payload.get("reviewer_id", "human_reviewer"),
             confidence_level="high",
-            target_word=payload.get("target_word", item.issue_type),
-            target_phoneme=payload.get("target_phoneme", ""),
-            observed_phoneme=payload.get("observed_phoneme"),
+            diagnosis_level="phoneme",
+            target_word=target_word,
+            target_phoneme=target_phoneme,
+            observed_phoneme=observed,
+            issue_type=payload.get("issue_type", item.issue_type),
+            speaking_target=payload.get("speaking_target", "pronunciation_clarity"),
+            severity="moderate",
+            pedagogical_interpretation=validated_feedback["diagnosis"],
+            requires_human_validation=False,
             allowed_feedback_strength="validated",
-            feedback_text=payload.get("diagnosis", item.diagnosis),
+            feedback_text=validated_feedback["diagnosis"],
             system_version_id=getattr(attempt, "system_version_id", 1),
         ))
     db.commit()
@@ -747,6 +832,7 @@ def dashboard_summary(group: str = "", participant: str = "", task_id: int = 0, 
     missing = Counter()
     issues = Counter()
     policy = Counter()
+    phonemes = Counter()
     by_participant_task = defaultdict(list)
     for a in attempts:
         by_condition[a.group_id].append(a)
@@ -754,6 +840,13 @@ def dashboard_summary(group: str = "", participant: str = "", task_id: int = 0, 
         issues.update(_json(a.issue_types_detected_json, "[]"))
         policy.update([a.feedback_type])
         by_participant_task[(a.participant_id, a.task_id)].append(a)
+    diagnosis_rows = db.query(DiagnosisRecord).all()
+    phonemes.update(row.target_phoneme for row in diagnosis_rows if row.target_phoneme)
+    repeated_phonemes = [
+        {"participant_id": participant, "target_phoneme": phoneme, "count": count}
+        for (participant, phoneme), count in Counter((row.participant_id, row.target_phoneme) for row in diagnosis_rows if row.target_phoneme).items()
+        if count >= 2
+    ]
     improvements = []
     for group_attempts in by_participant_task.values():
         ordered = sorted(group_attempts, key=lambda item: item.attempt_number)
@@ -783,12 +876,24 @@ def dashboard_summary(group: str = "", participant: str = "", task_id: int = 0, 
         "common_missing_words": [{"word": k, "count": v} for k, v in missing.most_common(10)],
         "common_issue_types": [{"issue_type": k, "count": v} for k, v in issues.most_common(10)],
         "feedback_policy_trigger_distribution": [{"feedback_type": k, "count": v} for k, v in policy.most_common()],
+        "common_focus_phonemes": [{"target_phoneme": k, "count": v} for k, v in phonemes.most_common(10)],
+        "repeated_phoneme_issues": repeated_phonemes,
+        "teacher_recommended_action": _teacher_recommendation(phonemes),
         "average_improvement_first_to_latest": round(sum(improvements) / len(improvements), 2) if improvements else 0,
         "feedback_views": db.query(FeedbackView).count(),
         "revision_events": db.query(RevisionEvent).count(),
         "learner_state_count": db.query(LearnerState).count(),
         "system_version": db.query(SystemVersion).order_by(SystemVersion.id.desc()).first(),
     }
+
+
+def _teacher_recommendation(phonemes):
+    if not phonemes:
+        return ""
+    phoneme, count = phonemes.most_common(1)[0]
+    if count < 2:
+        return ""
+    return "Several learners showed repeated /%s/ focus-word issues. Consider a short class activity contrasting /%s/ with common substitutions before the next read-aloud practice." % (phoneme, phoneme)
 
 
 @router.get("/dashboard/condition-comparison")
@@ -1105,6 +1210,14 @@ def import_external_scores(file: UploadFile = File(...), db: Session = Depends(g
             system_version_id=getattr(attempt, "system_version_id", 1),
         ))
         if row.get("score_level") == "phoneme" and score < 70:
+            model_feedback = feedback_from_diagnosis(type("Record", (), {
+                "evidence_level": "model_supported_diagnosis",
+                "target_word": row.get("target_word", ""),
+                "target_phoneme": row.get("target_phoneme", ""),
+                "observed_phoneme": row.get("observed_phoneme_optional") or None,
+                "speaking_target": "pronunciation_clarity",
+                "score": score,
+            })())
             db.add(DiagnosisRecord(
                 study_id=attempt.study_id,
                 condition_id=attempt.condition_id,
@@ -1112,15 +1225,28 @@ def import_external_scores(file: UploadFile = File(...), db: Session = Depends(g
                 task_id=attempt.task_id,
                 attempt_id=attempt.id,
                 evidence_level="model_supported_diagnosis",
+                diagnosis_level="phoneme",
                 evidence_source=row.get("source_name", ""),
                 confidence_level="medium" if confidence < 0.8 else "high",
                 target_word=row.get("target_word", ""),
                 target_phoneme=row.get("target_phoneme", ""),
                 observed_phoneme=row.get("observed_phoneme_optional") or None,
+                issue_type=row.get("issue_type_optional", ""),
+                speaking_target="pronunciation_clarity",
+                severity="moderate",
+                pedagogical_interpretation="Low imported phoneme-level score.",
+                requires_human_validation=False,
                 allowed_feedback_strength="direct",
-                feedback_text="The model indicates that the %s sound in this word may need targeted practice." % row.get("target_phoneme", "target"),
+                feedback_text=model_feedback["diagnosis"],
                 system_version_id=getattr(attempt, "system_version_id", 1),
             ))
+            item = db.query(FeedbackItem).filter(FeedbackItem.attempt_id == attempt.id).order_by(FeedbackItem.id.desc()).first()
+            if item:
+                item.diagnosis = model_feedback["diagnosis"]
+                item.explanation = model_feedback["explanation"]
+                item.action_guidance = model_feedback["action_guidance"]
+                item.revision_goal = model_feedback["revision_goal"]
+                item.validated_feedback_json = json.dumps(model_feedback)
         imported += 1
     db.commit()
     return {"imported": imported, "errors": errors}

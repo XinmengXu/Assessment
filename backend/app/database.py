@@ -185,11 +185,17 @@ class DiagnosisRecord(Base):
     task_id = Column(Integer, index=True)
     attempt_id = Column(Integer, index=True)
     evidence_level = Column(String, default="asr_supported_cue")
+    diagnosis_level = Column(String, default="word")
     evidence_source = Column(String, default="asr_alignment")
     confidence_level = Column(String, default="low")
     target_word = Column(String, default="")
     target_phoneme = Column(String, default="")
     observed_phoneme = Column(String, nullable=True)
+    issue_type = Column(String, default="")
+    speaking_target = Column(String, default="")
+    severity = Column(String, default="moderate")
+    pedagogical_interpretation = Column(Text, default="")
+    requires_human_validation = Column(Boolean, default=False)
     allowed_feedback_strength = Column(String, default="cautious")
     feedback_text = Column(Text, default="")
     system_version_id = Column(Integer, default=1)
@@ -409,6 +415,14 @@ def migrate_sqlite_columns():
             "target_word": "VARCHAR DEFAULT ''",
             "target_phoneme": "VARCHAR DEFAULT ''",
             "observed_phoneme": "VARCHAR DEFAULT ''",
+        },
+        "diagnosis_records": {
+            "diagnosis_level": "VARCHAR DEFAULT 'word'",
+            "issue_type": "VARCHAR DEFAULT ''",
+            "speaking_target": "VARCHAR DEFAULT ''",
+            "severity": "VARCHAR DEFAULT 'moderate'",
+            "pedagogical_interpretation": "TEXT DEFAULT ''",
+            "requires_human_validation": "BOOLEAN DEFAULT 0",
         },
         "revision_events": {
             "word_match_delta": "FLOAT DEFAULT 0",

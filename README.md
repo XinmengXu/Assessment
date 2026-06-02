@@ -123,6 +123,25 @@ The platform separates evidence levels:
 
 ASR alone never supports wording such as "you pronounced X as Y."
 
+## Word And Sound-Level Feedback
+
+Learner-facing diagnostic feedback now includes:
+
+- Word needing attention.
+- Target sound focus when task metadata defines it.
+- Evidence level: ASR-supported cue, model-supported diagnosis, or human-validated diagnosis.
+- Speaking target.
+- Diagnosis.
+- Criterion link.
+- Explanation.
+- Action guidance.
+- Revision goal.
+- Practice path such as `sound -> word -> phrase -> sentence`.
+
+If a practice task has no `focus_phonemes` or `word_phoneme_map`, sound-specific feedback is not generated. The task management page warns researchers: `This task cannot produce sound-level feedback until focus phonemes are defined.`
+
+ASR-supported feedback may say that a focus word was not clearly recognized and that this may relate to the target sound in the task. It may not claim an exact observed phoneme. Model-supported and human-validated evidence can support stronger phoneme-level feedback.
+
 ## External Scores Import
 
 Researchers can download a CSV template from `GET /api/external-scores/template` and import scores with `POST /api/external-scores/import`.

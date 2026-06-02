@@ -185,6 +185,15 @@ function FeedbackPanel({ attempt, groupId }: { attempt: Attempt | null; groupId:
         <Metric label="Word match" value={`${attempt.word_match_score}%`} />
         <Metric label="Long pauses" value={attempt.long_pause_count} />
       </div>
+      {Boolean(feedback.word_label || feedback.sound_focus_label || feedback.evidence_level_label) && (
+        <div className="feedback-box sound-focus-box">
+          <strong>Word/Sound Evidence</strong>
+          <p>Word needing attention: {String(feedback.word_label || "not available")}</p>
+          <p>Target sound focus: {String(feedback.sound_focus_label || "Sound-specific feedback is unavailable for this task because no focus phoneme was defined.")}</p>
+          <p>Evidence level: {String(feedback.evidence_level_label || "ASR-supported cue")}</p>
+          <p>Practice path: {String(feedback.practice_path || "word -> phrase -> sentence")}</p>
+        </div>
+      )}
       {attempt.asr_sanity?.warnings?.length ? (
         <div className="feedback-box warning-box"><strong>ASR Warnings</strong><p>{attempt.asr_sanity.warnings.join(", ")}</p></div>
       ) : null}
@@ -199,6 +208,7 @@ function FeedbackPanel({ attempt, groupId }: { attempt: Attempt | null; groupId:
       ) : (
         <>
           <Box title="Diagnosis" text={String(feedback.diagnosis)} />
+          <Box title="Criterion Link" text={String(feedback.criterion_link || "")} />
           <Box title="Explanation" text={String(feedback.explanation)} />
           <Box title="Action Guidance" text={String(feedback.action_guidance)} />
           <Box title="Revision" text={String(feedback.revision_instruction)} />

@@ -240,9 +240,9 @@ function demoConditions() {
     ["assessment_only", "Condition A: Assessment-only", false, false, false, false],
     ["transcript_only", "Condition B: Transcript-only", true, false, false, true],
     ["score_only", "Condition C: Score-only", true, true, false, true],
-    ["explainable", "Condition D: Explainable rule-based feedback", true, true, true, true],
-    ["adaptive", "Condition E: Adaptive learner-model feedback", true, true, true, true],
-    ["human_validated_feedback", "Condition F: Human-validated feedback", true, true, false, true],
+    ["explainable_word_sound_feedback", "Condition D: Explainable word/sound feedback", true, true, true, true],
+    ["adaptive_word_sound_feedback", "Condition E: Adaptive word/sound feedback", true, true, true, true],
+    ["human_validated_phoneme_feedback", "Condition F: Human-validated phoneme feedback", true, true, false, true],
     ["teacher_orchestrated_feedback", "Condition G: Teacher-orchestrated feedback", true, true, true, true],
   ].map(([condition_code, condition_name, show_transcript, show_score, show_diagnosis, revision_allowed], index) => ({
     id: index + 1,

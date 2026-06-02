@@ -26,7 +26,7 @@ CONDITION_PRESETS = {
         "revision_allowed": True,
         "feedback_type": "score_only",
     },
-    "explainable_diagnostic_feedback": {
+    "explainable_word_sound_feedback": {
         "show_transcript": True,
         "show_score": True,
         "show_diagnosis": True,
@@ -35,7 +35,7 @@ CONDITION_PRESETS = {
         "revision_allowed": True,
         "feedback_type": "explainable",
     },
-    "adaptive_diagnostic_feedback": {
+    "adaptive_word_sound_feedback": {
         "show_transcript": True,
         "show_score": True,
         "show_diagnosis": True,
@@ -44,7 +44,7 @@ CONDITION_PRESETS = {
         "revision_allowed": True,
         "feedback_type": "adaptive",
     },
-    "human_validated_feedback": {
+    "human_validated_phoneme_feedback": {
         "show_transcript": True,
         "show_score": True,
         "show_diagnosis": False,
@@ -72,15 +72,18 @@ def normalize_condition(value):
         "condition_a": "assessment_only",
         "condition_b": "transcript_only",
         "condition_c": "score_only",
-        "condition_d": "explainable_diagnostic_feedback",
-        "condition_e": "adaptive_diagnostic_feedback",
-        "condition_f": "human_validated_feedback",
+        "condition_d": "explainable_word_sound_feedback",
+        "condition_e": "adaptive_word_sound_feedback",
+        "condition_f": "human_validated_phoneme_feedback",
         "condition_g": "teacher_orchestrated_feedback",
-        "explainable": "explainable_diagnostic_feedback",
-        "adaptive": "adaptive_diagnostic_feedback",
-        "human_validated": "human_validated_feedback",
+        "explainable": "explainable_word_sound_feedback",
+        "adaptive": "adaptive_word_sound_feedback",
+        "human_validated": "human_validated_phoneme_feedback",
+        "explainable_diagnostic_feedback": "explainable_word_sound_feedback",
+        "adaptive_diagnostic_feedback": "adaptive_word_sound_feedback",
+        "human_validated_feedback": "human_validated_phoneme_feedback",
     }
-    return aliases.get(key, key if key in CONDITION_PRESETS else "explainable_diagnostic_feedback")
+    return aliases.get(key, key if key in CONDITION_PRESETS else "explainable_word_sound_feedback")
 
 
 def condition_policy(condition):
@@ -115,7 +118,21 @@ def filter_feedback_for_condition(condition, transcript, score, structured_feedb
     if policy["feedback_type"] == "human_validated_pending":
         result["comment"] = "Draft feedback has been generated and is waiting for human validation."
         return result
-    for key in ["diagnosis", "explanation", "action_guidance", "revision_instruction", "revision_goal", "metacognitive_prompt"]:
+    for key in [
+        "word_label",
+        "sound_focus_label",
+        "evidence_level_label",
+        "diagnosis",
+        "criterion_link",
+        "explanation",
+        "action_guidance",
+        "revision_instruction",
+        "revision_goal",
+        "metacognitive_prompt",
+        "practice_path",
+        "speaking_target",
+        "teacher_review_recommended",
+    ]:
         if key in structured_feedback:
             result[key] = structured_feedback[key]
     if policy["feedback_type"] == "adaptive":

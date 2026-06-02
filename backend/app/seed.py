@@ -7,9 +7,9 @@ CONDITIONS = [
     ("assessment_only", "Condition A: Assessment-only", False, False, False, False, False, False, False, False, False),
     ("transcript_only", "Condition B: Transcript-only", True, False, False, False, False, False, False, False, True),
     ("score_only", "Condition C: Score-only", True, True, False, False, False, False, False, False, True),
-    ("explainable_diagnostic_feedback", "Condition D: Explainable diagnostic feedback", True, True, True, True, True, False, False, False, True),
-    ("adaptive_diagnostic_feedback", "Condition E: Adaptive diagnostic feedback", True, True, True, True, True, True, False, False, True),
-    ("human_validated_feedback", "Condition F: Human-validated feedback", True, True, False, False, False, False, True, False, True),
+    ("explainable_word_sound_feedback", "Condition D: Explainable word/sound feedback", True, True, True, True, True, False, False, False, True),
+    ("adaptive_word_sound_feedback", "Condition E: Adaptive word/sound feedback", True, True, True, True, True, True, False, False, True),
+    ("human_validated_phoneme_feedback", "Condition F: Human-validated phoneme feedback", True, True, False, False, False, False, True, False, True),
     ("teacher_orchestrated_feedback", "Condition G: Teacher-orchestrated feedback", True, True, True, True, True, False, False, False, True),
 ]
 
@@ -112,6 +112,20 @@ def seed_database(db):
                 active=True,
             ))
         db.commit()
+    else:
+        practice_tasks = db.query(Task).filter(Task.task_type == "practice").order_by(Task.id.asc()).all()
+        changed = False
+        for idx, task in enumerate(practice_tasks):
+            if not task.focus_phonemes_json or task.focus_phonemes_json == "[]":
+                _, issues, focus, phonemes, word_map = PRACTICE_BASE[idx % len(PRACTICE_BASE)]
+                task.issue_types_json = json.dumps(issues)
+                task.focus_words = json.dumps(focus)
+                task.focus_phonemes_json = json.dumps(phonemes)
+                task.word_phoneme_map_json = json.dumps({k.lower(): v for k, v in word_map.items()})
+                task.speaking_target = task.speaking_target or "pronunciation_clarity"
+                changed = True
+        if changed:
+            db.commit()
 
     if db.query(FeedbackTemplate).count() == 0:
         for issue_type, parts in TEMPLATES.items():

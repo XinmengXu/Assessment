@@ -12,6 +12,9 @@ type Summary = {
   average_speech_rate_wpm: number;
   common_missing_words: { word: string; count: number }[];
   common_issue_types?: { issue_type: string; count: number }[];
+  common_focus_phonemes?: { target_phoneme: string; count: number }[];
+  repeated_phoneme_issues?: { participant_id: string; target_phoneme: string; count: number }[];
+  teacher_recommended_action?: string;
   common_substitutions: { substitution: string; count: number }[];
   feedback_policy_trigger_distribution?: { feedback_type: string; count: number }[];
   average_improvement_first_to_latest: number;
@@ -88,7 +91,10 @@ export function Dashboard() {
           <div className="two-col">
             <List title="Common Missing Words" items={summary.common_missing_words.map((item) => `${item.word}: ${item.count}`)} />
             <List title="Common Issue Types" items={(summary.common_issue_types || []).map((item) => `${item.issue_type}: ${item.count}`)} />
+            <List title="Common Focus Phonemes" items={(summary.common_focus_phonemes || []).map((item) => `/${item.target_phoneme}/: ${item.count}`)} />
+            <List title="Repeated Phoneme Issues" items={(summary.repeated_phoneme_issues || []).map((item) => `${item.participant_id}: /${item.target_phoneme}/ (${item.count})`)} />
             <List title="Feedback Policy Triggers" items={(summary.feedback_policy_trigger_distribution || []).map((item) => `${item.feedback_type}: ${item.count}`)} />
+            <List title="Suggested Class Action" items={summary.teacher_recommended_action ? [summary.teacher_recommended_action] : []} />
           </div>
           <div className="table-wrap">
             <table>
