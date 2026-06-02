@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.database import SessionLocal, Task
+from app.seed import seed_database
 
 
 client = TestClient(app)
@@ -30,7 +31,8 @@ def test_llm_condition_hidden_from_condition_api():
 def test_seeded_practice_tasks_have_focus_metadata():
     db = SessionLocal()
     try:
-        tasks = db.query(Task).filter(Task.task_type == "practice").all()
+        seed_database(db)
+        tasks = db.query(Task).filter(Task.task_type == "practice", Task.task_code.like("P%")).all()
         assert len(tasks) >= 40
         assert all(task.focus_words and task.focus_words != "[]" for task in tasks)
         assert all(task.issue_types_json and task.issue_types_json != "[]" for task in tasks)

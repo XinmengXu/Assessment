@@ -166,7 +166,22 @@ def _ensure_unlocked_study(db, study_id):
 def _focus_phoneme_for_word(task, word):
     mapping = _json(getattr(task, "word_phoneme_map_json", "{}"), "{}")
     phonemes = mapping.get((word or "").lower()) or mapping.get(word or "") or []
-    return phonemes[0] if phonemes else ""
+    if phonemes:
+        return phonemes[0]
+    issues = _json(getattr(task, "issue_types_json", "[]"), "[]")
+    fallback = {
+        "theta_words": "th",
+        "r_l_contrast": "r/l",
+        "final_consonants": "final consonant",
+        "consonant_clusters": "cluster",
+        "vowel_length": "vowel length",
+        "word_stress": "stress",
+        "rhythm": "rhythm",
+    }
+    for issue in issues:
+        if issue in fallback:
+            return fallback[issue]
+    return ""
 
 
 def _target_word_from_alignment(task, alignment):
