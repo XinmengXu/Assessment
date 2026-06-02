@@ -25,7 +25,7 @@ def wav_bytes():
 def test_llm_condition_hidden_from_condition_api():
     response = client.get("/api/studies/1/conditions")
     assert response.status_code == 200
-    assert "llm_verbalized" not in {row["condition_code"] for row in response.json()}
+    assert {row["condition_code"] for row in response.json()} == {"G0", "G1", "G2", "G3"}
 
 
 def test_seeded_practice_tasks_have_focus_metadata():
@@ -66,8 +66,8 @@ def test_asr_phoneme_feedback_uses_task_focus_sound():
     feedback = response.json()["feedback"]
     assert feedback["word_label"] == "thought"
     assert feedback["sound_focus_label"]
-    assert feedback["evidence_level_label"] == "ASR-supported cue"
-    assert "not an exact pronunciation diagnosis" in feedback["explanation"]
+    assert feedback["evidence_note"] == "AI cue based on speech recognition. Use it as practice support."
+    assert "not an exact pronunciation diagnosis" not in feedback["practice_suggestion"]
 
 
 def test_external_score_template_and_invalid_import():
@@ -98,19 +98,25 @@ def test_external_phoneme_import_creates_model_supported_diagnosis():
     assert "model_supported_diagnosis" in client.get("/api/exports/diagnosis-records").text
 
 
-def test_human_feedback_pending_can_be_released():
+def test_teacher_feedback_release_creates_human_validated_evidence():
     attempt = client.post(
         "/api/attempts/analyze",
-        data={"participant_id": "human_release_test", "group_id": "human_validated_feedback", "task_id": "1", "transcript_hint": "The thin path winds through three quiet fields."},
+        data={"participant_id": "human_release_test", "group_id": "G3", "task_id": "1", "transcript_hint": "The thin path winds through three quiet fields."},
         files={"audio": ("speech.wav", wav_bytes(), "audio/wav")},
     ).json()
-    pending = client.get("/api/feedback/pending-review").json()
-    item = next(row for row in pending if row["attempt_id"] == attempt["id"])
-    edited = client.post(f"/api/feedback/{item['id']}/edit", json={"target_word": "thought", "target_phoneme": "th", "observed_phoneme": "s", "reviewer_id": "r1"})
-    assert edited.status_code == 200
-    assert "closer to /s/" in edited.json()["diagnosis"]
-    assert client.post(f"/api/feedback/{item['id']}/approve", json={}).status_code == 200
-    assert client.post(f"/api/feedback/{item['id']}/release").json()["released_to_learner"] is True
+    feedback = client.post("/api/teacher/feedback", json={
+        "participant_id": "human_release_test",
+        "task_id": 1,
+        "attempt_id": attempt["id"],
+        "target_word": "thin",
+        "target_phoneme": "th",
+        "observed_phoneme": "s",
+        "comment": "Practise the target sound.",
+    }).json()
+    released = client.post(f"/api/teacher/feedback/{feedback['id']}/release")
+    assert released.status_code == 200
+    assert released.json()["status"] == "released"
+    assert "human_validated_diagnosis" in client.get("/api/exports/pronunciation-evidence").text
 
 
 def test_teacher_action_log_endpoint():

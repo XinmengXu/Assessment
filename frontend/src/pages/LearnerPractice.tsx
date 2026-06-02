@@ -180,11 +180,13 @@ function FeedbackPanel({ attempt, groupId }: { attempt: Attempt | null; groupId:
   const feedback = attempt.feedback;
   const scoreText = String(feedback.practice_score ?? feedback.overall_score ?? "N/A");
   const commentText = String(feedback.comment ?? "");
+  const showScore = Boolean(feedback.show_score || attempt.show_score);
+  const showComment = Boolean(feedback.show_comment || attempt.show_comment);
   return (
     <aside className="panel feedback-panel">
-      <div className={attempt.no_speech_detected || attempt.feedback_type === "invalid_audio" ? "score-ring invalid" : "score-ring"}>
+      {showScore || attempt.no_speech_detected ? <div className={attempt.no_speech_detected || attempt.feedback_type === "invalid_audio" ? "score-ring invalid" : "score-ring"}>
         {scoreText}
-      </div>
+      </div> : null}
       <h2>Automated Feedback</h2>
       <p className="small-note">Practice clarity score, not a validated speaking proficiency score.</p>
       {feedback.demo_notice ? <div className="demo-inline">{String(feedback.demo_notice)}</div> : null}
@@ -198,17 +200,18 @@ function FeedbackPanel({ attempt, groupId }: { attempt: Attempt | null; groupId:
       <div className="metrics-grid">
         <Metric label="Duration" value={`${attempt.duration_seconds}s`} />
         <Metric label="Speech rate" value={`${attempt.speech_rate_wpm} wpm`} />
-        <Metric label={feedback.simulated ? "Simulated practice score" : "Practice clarity score"} value={scoreText} />
+        {showScore ? <Metric label={feedback.simulated ? "Simulated practice score" : "Practice clarity score"} value={scoreText} /> : null}
         <Metric label="Word match" value={`${attempt.word_match_score}%`} />
         <Metric label="Long pauses" value={attempt.long_pause_count} />
       </div>
-      {Boolean(feedback.word_label || feedback.sound_focus_label || feedback.evidence_level_label) && (
+      {showComment && (
         <div className="feedback-box sound-focus-box">
-          <strong>Word/Sound Evidence</strong>
-          <p>Word needing attention: {String(feedback.word_label || "not available")}</p>
-          <p>Target sound focus: {String(feedback.sound_focus_label || "Sound-specific feedback is unavailable for this task because no focus phoneme was defined.")}</p>
-          <p>Evidence level: {String(feedback.evidence_level_label || "ASR-supported cue")}</p>
-          <p>Practice path: {String(feedback.practice_path || "word -> phrase -> sentence")}</p>
+          <strong>Practice Comment</strong>
+          <p>Word to practise: {String(feedback.word_to_practise || feedback.word_label || "focus word")}</p>
+          {feedback.target_sound || feedback.sound_focus_label ? <p>Target sound: {String(feedback.target_sound || feedback.sound_focus_label)}</p> : null}
+          <p>Practice suggestion: {String(feedback.practice_suggestion || feedback.action_guidance || commentText)}</p>
+          <p>Revision goal: {String(feedback.revision_goal || feedback.revision_instruction || "Try to make the focus word easier to recognize.")}</p>
+          {feedback.evidence_note ? <p className="small-note">{String(feedback.evidence_note)}</p> : null}
         </div>
       )}
       {attempt.asr_sanity?.warnings?.length ? (
@@ -216,20 +219,12 @@ function FeedbackPanel({ attempt, groupId }: { attempt: Attempt | null; groupId:
       ) : null}
       {attempt.no_speech_detected || attempt.feedback_type === "invalid_audio" ? (
         <div className="feedback-box error-box"><strong>No Valid Speech</strong><p>{commentText}</p></div>
-      ) : groupId === "control" ? (
-        <div className="feedback-box"><strong>Comment</strong><p>{commentText}</p></div>
-      ) : feedback.feedback_type === "assessment_only" ? (
-        <div className="feedback-box"><strong>Assessment Mode</strong><p>{commentText}</p></div>
-      ) : feedback.feedback_type === "transcript_only" ? (
-        <div className="feedback-box"><strong>Transcript Only</strong><p>{commentText}</p></div>
+      ) : !showScore && !showComment ? (
+        <div className="feedback-box"><strong>Practice</strong><p>Recording saved. Listen to the model audio, practise, and re-record when ready.</p></div>
+      ) : !showComment ? (
+        <div className="feedback-box"><strong>Score feedback</strong><p>Your practice clarity score is shown above. No diagnostic comment is shown in this group.</p></div>
       ) : (
-        <>
-          <Box title="Diagnosis" text={String(feedback.diagnosis)} />
-          <Box title="Criterion Link" text={String(feedback.criterion_link || "")} />
-          <Box title="Explanation" text={String(feedback.explanation)} />
-          <Box title="Action Guidance" text={String(feedback.action_guidance)} />
-          <Box title="Revision" text={String(feedback.revision_instruction)} />
-        </>
+        null
       )}
       <p className="small-note">Automatically generated learning support, not a high-stakes assessment.</p>
     </aside>

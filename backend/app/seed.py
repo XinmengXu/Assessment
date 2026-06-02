@@ -4,13 +4,10 @@ from .database import Condition, FeedbackTemplate, Participant, Study, SystemVer
 
 
 CONDITIONS = [
-    ("assessment_only", "Condition A: Assessment-only", False, False, False, False, False, False, False, False, False),
-    ("transcript_only", "Condition B: Transcript-only", True, False, False, False, False, False, False, False, True),
-    ("score_only", "Condition C: Score-only", True, True, False, False, False, False, False, False, True),
-    ("explainable_word_sound_feedback", "Condition D: Explainable word/sound feedback", True, True, True, True, True, False, False, False, True),
-    ("adaptive_word_sound_feedback", "Condition E: Adaptive word/sound feedback", True, True, True, True, True, True, False, False, True),
-    ("human_validated_phoneme_feedback", "Condition F: Human-validated phoneme feedback", True, True, False, False, False, False, True, False, True),
-    ("teacher_orchestrated_feedback", "Condition G: Teacher-orchestrated feedback", True, True, True, True, True, False, False, False, True),
+    ("G0", "G0 Practice-only", True, False, False, False, False, False, False, True),
+    ("G1", "G1 Score-only feedback", True, True, False, False, False, False, False, True),
+    ("G2", "G2 Comment-only feedback", True, False, True, True, True, False, False, True),
+    ("G3", "G3 Score + Comment feedback", True, True, True, True, True, False, False, True),
 ]
 
 PRACTICE_BASE = [
@@ -58,25 +55,33 @@ def seed_database(db):
         db.add(Study(id=1, study_name="Default Speech-AI Feedback Study", description="Default controlled experiment setup.", active=True))
         db.commit()
 
-    if db.query(Condition).count() == 0:
-        for idx, item in enumerate(CONDITIONS, start=1):
-            code, name, transcript, score, diagnosis, explanation, action, adaptive, human, llm, revision = item
-            db.add(Condition(
-                id=idx,
-                study_id=1,
-                condition_code=code,
-                condition_name=name,
-                show_transcript=transcript,
-                show_score=score,
-                show_diagnosis=diagnosis,
-                show_explanation=explanation,
-                show_action_guidance=action,
-                adaptive_feedback=adaptive,
-                human_validation_required=human,
-                llm_verbalization_enabled=llm,
-                revision_allowed=revision,
-            ))
-        db.commit()
+    for idx, item in enumerate(CONDITIONS, start=1):
+        code, name, transcript, score, comment, word_focus, sound_focus, teacher, peer, revision = item
+        condition = db.query(Condition).filter(Condition.condition_code == code).first()
+        if not condition:
+            condition = db.query(Condition).filter(Condition.id == idx).first()
+        if not condition:
+            condition = Condition(id=idx, study_id=1, condition_code=code, condition_name=name)
+            db.add(condition)
+        condition.condition_code = code
+        condition.condition_name = name
+        condition.show_transcript = transcript
+        condition.show_score = score
+        condition.show_comment = comment
+        condition.show_word_focus = word_focus
+        condition.show_sound_focus = sound_focus
+        condition.show_practice_suggestion = comment
+        condition.show_diagnosis = comment
+        condition.show_explanation = False
+        condition.show_action_guidance = comment
+        condition.adaptive_feedback = False
+        condition.human_validation_required = False
+        condition.llm_verbalization_enabled = False
+        condition.enable_teacher_feedback = teacher
+        condition.enable_peer_feedback = peer
+        condition.allow_revision = revision
+        condition.revision_allowed = revision
+    db.commit()
 
     if db.query(Task).count() < 70:
         db.query(Task).delete()
@@ -138,7 +143,7 @@ def seed_database(db):
             db.add(FeedbackTemplate(
                 issue_type=issue_type,
                 feedback_level="standard",
-                condition="explainable",
+                condition="G3",
                 diagnosis_template=diagnosis,
                 explanation_template=explanation,
                 action_template=action,
@@ -154,17 +159,17 @@ def seed_database(db):
             participant_code="sample001",
             study_id=1,
             condition_id=4,
-            group_id="explainable",
-            group_label="Condition D",
+            group_id="G3",
+            group_label="G3 Score + Comment feedback",
             session_id="demo",
         ))
         db.add(Participant(
             participant_id="sample002",
             participant_code="sample002",
             study_id=1,
-            condition_id=3,
-            group_id="score_only",
-            group_label="Condition C",
+            condition_id=2,
+            group_id="G1",
+            group_label="G1 Score-only feedback",
             session_id="demo",
         ))
         db.commit()

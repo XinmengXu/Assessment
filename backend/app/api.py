@@ -45,6 +45,7 @@ from .database import (
 )
 from .schemas import AnnotationCreate, ParticipantCreate, ParticipantRead, TaskCreate, TaskRead
 from .services.feedback.feedback_policy import (
+    CONDITION_PRESETS,
     condition_policy,
     derive_feedback_use_state,
     filter_feedback_for_condition,
@@ -111,6 +112,7 @@ def _feedback_use_state(db, attempt):
 
 def _attempt_to_dict(db, attempt, base_score=None):
     feedback = _json(attempt.feedback_json, "{}")
+    policy = condition_policy(attempt.group_id)
     score = _attempt_score(attempt)
     improvement = 0 if score is None or base_score is None else round(score - base_score, 2)
     return {
@@ -121,6 +123,8 @@ def _attempt_to_dict(db, attempt, base_score=None):
         "task_id": attempt.task_id,
         "group_id": attempt.group_id,
         "condition": attempt.group_id,
+        "condition_group": feedback.get("condition_group", policy["condition_group"]),
+        "condition_label": feedback.get("condition_label", policy["friendly_label"]),
         "attempt_number": attempt.attempt_number,
         "audio_path": attempt.audio_path,
         "asr_adapter": attempt.asr_adapter,
@@ -139,6 +143,11 @@ def _attempt_to_dict(db, attempt, base_score=None):
         "feedback_generated": bool(attempt.feedback_generated),
         "feedback_shown": bool(attempt.feedback_shown),
         "feedback_type": attempt.feedback_type,
+        "show_score": bool(feedback.get("show_score", policy["show_score"])),
+        "show_comment": bool(feedback.get("show_comment", policy["show_comment"])),
+        "score_shown": feedback.get("practice_score") is not None,
+        "comment_shown": bool(feedback.get("show_comment") and feedback.get("comment")),
+        "revision_allowed": bool(feedback.get("revision_allowed", policy["revision_allowed"])),
         "feedback": feedback,
         "alignment": _json(getattr(attempt, "alignment_json", "{}"), "{}"),
         "asr_sanity": _json(getattr(attempt, "asr_sanity_json", "{}"), "{}"),
@@ -283,19 +292,18 @@ def health():
 
 
 ROLE_LABELS = {
-    "assessment_only": "Practice score only",
-    "ai_feedback": "AI-supported practice feedback",
-    "ai_plus_teacher_feedback": "AI feedback plus teacher feedback",
-    "ai_plus_peer_feedback": "AI feedback plus peer feedback",
-    "ai_plus_teacher_moderated_peer_feedback": "AI plus teacher-moderated peer feedback",
-    "teacher_feedback_only": "Teacher feedback only",
-    "peer_feedback_only": "Peer feedback only",
+    "G0": "Practice",
+    "G1": "Score feedback",
+    "G2": "Comment feedback",
+    "G3": "Score and comment feedback",
 }
 
 
-def _user_dict(user):
+def _user_dict(user, db=None):
     if not user:
         return None
+    participant = db.query(Participant).filter(Participant.participant_id == user.user_code).first() if db else None
+    condition_group = normalize_condition(participant.group_id if participant else "G3")
     return {
         "id": user.id,
         "user_code": user.user_code,
@@ -303,6 +311,8 @@ def _user_dict(user):
         "display_name": user.display_name or user.user_code,
         "class_id": user.class_id,
         "group_id": user.group_id,
+        "condition_group": condition_group,
+        "condition_label": ROLE_LABELS.get(condition_group, "Score and comment feedback"),
         "active": bool(user.active),
         "created_at": user.created_at,
     }
@@ -330,7 +340,7 @@ def login(payload: dict, db: Session = Depends(get_db)):
     user = _user_by_code(db, user_code)
     if not user:
         raise HTTPException(status_code=404, detail="User code not found or inactive")
-    return {"user": _user_dict(user), "token_type": "pilot_user_code", "student_friendly_workflows": ROLE_LABELS}
+    return {"user": _user_dict(user, db), "token_type": "pilot_user_code", "student_friendly_workflows": ROLE_LABELS}
 
 
 @router.get("/me")
@@ -338,12 +348,12 @@ def me(user_code: str, db: Session = Depends(get_db)):
     user = _user_by_code(db, user_code)
     if not user:
         raise HTTPException(status_code=404, detail="User code not found or inactive")
-    return _user_dict(user)
+    return _user_dict(user, db)
 
 
 @router.get("/users")
 def list_users(db: Session = Depends(get_db)):
-    return [_user_dict(user) for user in db.query(User).order_by(User.id.asc()).all()]
+    return [_user_dict(user, db) for user in db.query(User).order_by(User.id.asc()).all()]
 
 
 @router.post("/users")
@@ -366,11 +376,17 @@ def create_user(payload: dict, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
     if user.role == "student":
+        condition_group = normalize_condition(payload.get("condition_group", "G3"))
+        condition = db.query(Condition).filter(Condition.condition_code == condition_group).first()
         participant = db.query(Participant).filter(Participant.participant_id == user.user_code).first()
         if not participant:
-            db.add(Participant(participant_id=user.user_code, participant_code=user.user_code, group_id="ai_feedback", class_id=str(user.class_id)))
-            db.commit()
-    return _user_dict(user)
+            participant = Participant(participant_id=user.user_code, participant_code=user.user_code, class_id=str(user.class_id))
+            db.add(participant)
+        participant.group_id = condition_group
+        participant.group_label = condition.condition_name if condition else condition_group
+        participant.condition_id = condition.id if condition else 4
+        db.commit()
+    return _user_dict(user, db)
 
 
 @router.post("/users/import")
@@ -794,13 +810,40 @@ def create_condition(study_id: int, payload: dict, db: Session = Depends(get_db)
 
 @router.get("/studies/{study_id}/conditions")
 def list_conditions(study_id: int, db: Session = Depends(get_db)):
-    return db.query(Condition).filter(Condition.study_id == study_id, Condition.condition_code != "llm_verbalized").order_by(Condition.id.asc()).all()
+    codes = ["G0", "G1", "G2", "G3"]
+    rows = db.query(Condition).filter(Condition.study_id == study_id, Condition.condition_code.in_(codes)).order_by(Condition.id.asc()).all()
+    if len(rows) < 4:
+        for idx, code in enumerate(codes, start=1):
+            policy = CONDITION_PRESETS[code]
+            condition = db.query(Condition).filter(Condition.condition_code == code).first() or db.query(Condition).filter(Condition.id == idx).first()
+            if not condition:
+                condition = Condition(id=idx, study_id=study_id, condition_code=code, condition_name=policy["condition_name"])
+                db.add(condition)
+            condition.condition_code = code
+            condition.condition_name = policy["condition_name"]
+            condition.show_score = policy["show_score"]
+            condition.show_comment = policy["show_comment"]
+            condition.show_word_focus = policy["show_word_focus"]
+            condition.show_sound_focus = policy["show_sound_focus"]
+            condition.show_practice_suggestion = policy["show_practice_suggestion"]
+            condition.revision_allowed = policy["revision_allowed"]
+            condition.allow_revision = policy["allow_revision"]
+            condition.enable_teacher_feedback = policy["enable_teacher_feedback"]
+            condition.enable_peer_feedback = policy["enable_peer_feedback"]
+        db.commit()
+        rows = db.query(Condition).filter(Condition.study_id == study_id, Condition.condition_code.in_(codes)).order_by(Condition.id.asc()).all()
+    result = []
+    for row in rows:
+        data = clean_model(row)
+        data["friendly_label"] = ROLE_LABELS.get(row.condition_code, row.condition_name)
+        result.append(data)
+    return result
 
 
 @router.post("/studies/{study_id}/assign")
 def assign_participant(study_id: int, payload: dict, db: Session = Depends(get_db)):
     participant_id = payload.get("participant_id")
-    condition_code = normalize_condition(payload.get("condition", "explainable"))
+    condition_code = normalize_condition(payload.get("condition", "G3"))
     condition = db.query(Condition).filter(Condition.study_id == study_id, Condition.condition_code == condition_code).first()
     if not condition:
         raise HTTPException(status_code=404, detail="Condition not found")
@@ -895,7 +938,7 @@ def deactivate_task(task_id: int, db: Session = Depends(get_db)):
 @router.post("/attempts/analyze")
 def analyze_attempt(
     participant_id: str = Form(...),
-    group_id: str = Form("explainable"),
+    group_id: str = Form("G3"),
     task_id: int = Form(...),
     study_id: int = Form(1),
     session_id: str = Form(""),
@@ -941,7 +984,7 @@ def analyze_attempt(
     score_result = compute_practice_score(alignment, features)
     score = score_result["practice_score"]
     issues = _detect_issue_types(task, alignment, features)
-    structured = generate_feedback("explainable", score or 0, task.target_text, transcript, alignment, features)
+    structured = generate_feedback("G3", score or 0, task.target_text, transcript, alignment, features)
     target_word = _target_word_from_alignment(task, alignment)
     target_phoneme = _focus_phoneme_for_word(task, target_word)
     if target_word:
@@ -955,7 +998,7 @@ def analyze_attempt(
             target_word,
             target_phoneme,
             task.speaking_target or "pronunciation_clarity",
-            repeated=repeated and condition_key == "adaptive_word_sound_feedback",
+            repeated=False,
         ))
     structured["practice_score"] = score
     structured["score_breakdown"] = score_result["score_breakdown"]
@@ -978,9 +1021,9 @@ def analyze_attempt(
     else:
         feedback = filter_feedback_for_condition(condition_key, transcript, score, structured)
     if not task.feedback_allowed and not features.get("no_speech_detected"):
-        feedback = filter_feedback_for_condition("assessment_only", transcript, score, structured)
+        feedback = filter_feedback_for_condition("G0", transcript, score, structured)
     feedback_type = feedback["feedback_type"]
-    feedback_shown = feedback_type not in ["assessment_only", "human_validated_pending"]
+    feedback_shown = feedback_type != "practice_only"
 
     attempt = Attempt(
         participant_id=participant_id,
@@ -1026,10 +1069,10 @@ def analyze_attempt(
         action_guidance=str(feedback.get("action_guidance", "")),
         revision_goal=str(feedback.get("revision_instruction", feedback.get("revision_goal", ""))),
         metacognitive_prompt=str(feedback.get("metacognitive_prompt", "")),
-        source="adaptive_policy" if feedback_type == "adaptive" else "template",
-        approved_by_human=feedback_type != "human_validated_pending",
-        validation_status="pending_review" if feedback_type == "human_validated_pending" else "draft_generated",
-        released_to_learner=feedback_type != "human_validated_pending",
+        source="template",
+        approved_by_human=True,
+        validation_status="draft_generated",
+        released_to_learner=True,
         original_feedback_json=json.dumps(feedback),
         validated_feedback_json=json.dumps({}),
     )
@@ -1425,7 +1468,25 @@ def export_participants(db: Session = Depends(get_db)):
 
 @router.get("/exports/attempts")
 def export_attempts(db: Session = Depends(get_db)):
-    return _write_csv(db, "attempts", [_attempt_to_dict(db, a) for a in db.query(Attempt).all()])
+    rows = []
+    for attempt in db.query(Attempt).order_by(Attempt.created_at.asc()).all():
+        feedback = _json(attempt.feedback_json, "{}")
+        policy = condition_policy(attempt.group_id)
+        rows.append({
+            "student_id": attempt.participant_id,
+            "condition_group": feedback.get("condition_group", policy["condition_group"]),
+            "show_score": feedback.get("show_score", policy["show_score"]),
+            "show_comment": feedback.get("show_comment", policy["show_comment"]),
+            "attempt_number": attempt.attempt_number,
+            "task_id": attempt.task_id,
+            "score_shown": feedback.get("practice_score") is not None,
+            "comment_shown": bool(feedback.get("show_comment") and feedback.get("comment")),
+            "revision_allowed": feedback.get("revision_allowed", policy["revision_allowed"]),
+            "created_at": attempt.created_at.isoformat(),
+            "asr_adapter": attempt.asr_adapter,
+            "valid_audio": getattr(attempt, "valid_audio", True),
+        })
+    return _write_csv(db, "attempts", rows)
 
 
 @router.get("/exports/studies")
@@ -1507,7 +1568,7 @@ def export_feedback(db: Session = Depends(get_db)):
 
 @router.get("/exports/revisions")
 def export_revisions(db: Session = Depends(get_db)):
-    return _write_csv(db, "revisions", [clean_model(r) for r in db.query(RevisionEvent).all()])
+    return export_revision_events_alias(db)
 
 
 @router.get("/exports/learner-states")
@@ -1530,6 +1591,67 @@ def export_study_design(db: Session = Depends(get_db)):
 def export_full(db: Session = Depends(get_db)):
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     path = EXPORT_DIR / ("full_research_export_%s.zip" % datetime.utcnow().strftime("%Y%m%d_%H%M%S"))
+    attempts_rows = []
+    for attempt in db.query(Attempt).order_by(Attempt.created_at.asc()).all():
+        feedback = _json(attempt.feedback_json, "{}")
+        policy = condition_policy(attempt.group_id)
+        attempts_rows.append({
+            "student_id": attempt.participant_id,
+            "condition_group": feedback.get("condition_group", policy["condition_group"]),
+            "show_score": feedback.get("show_score", policy["show_score"]),
+            "show_comment": feedback.get("show_comment", policy["show_comment"]),
+            "attempt_number": attempt.attempt_number,
+            "task_id": attempt.task_id,
+            "score_shown": feedback.get("practice_score") is not None,
+            "comment_shown": bool(feedback.get("show_comment") and feedback.get("comment")),
+            "revision_allowed": feedback.get("revision_allowed", policy["revision_allowed"]),
+            "created_at": attempt.created_at.isoformat(),
+        })
+    ai_rows = []
+    for item in db.query(FeedbackItem).order_by(FeedbackItem.created_at.asc()).all():
+        attempt = db.query(Attempt).filter(Attempt.id == item.attempt_id).first()
+        feedback = _json(item.original_feedback_json, "{}")
+        policy = condition_policy(attempt.group_id if attempt else feedback.get("condition_group", "G3"))
+        ai_rows.append({
+            "student_id": item.participant_id,
+            "condition_group": feedback.get("condition_group", policy["condition_group"]),
+            "task_id": item.task_id,
+            "attempt_id": item.attempt_id,
+            "word_to_practise": feedback.get("word_to_practise", feedback.get("word_label", "")),
+            "target_sound": feedback.get("target_sound", feedback.get("sound_focus_label", "")),
+            "practice_suggestion": feedback.get("practice_suggestion", feedback.get("action_guidance", "")),
+            "revision_goal": feedback.get("revision_goal", ""),
+            "score_value": feedback.get("practice_score") if feedback.get("show_score", policy["show_score"]) else "",
+            "score_hidden": not bool(feedback.get("show_score", policy["show_score"])),
+            "comment_hidden": not bool(feedback.get("show_comment", policy["show_comment"])),
+        })
+    view_rows = []
+    for view in db.query(FeedbackView).order_by(FeedbackView.viewed_at.asc()).all():
+        attempt = db.query(Attempt).filter(Attempt.id == view.attempt_id).first()
+        feedback = _json(attempt.feedback_json, "{}") if attempt else {}
+        policy = condition_policy(attempt.group_id if attempt else "G3")
+        view_rows.append({
+            "student_id": view.participant_id,
+            "condition_group": feedback.get("condition_group", policy["condition_group"]),
+            "feedback_type": "score" if feedback.get("show_score") else "comment" if feedback.get("show_comment") else "practice",
+            "viewed_at": view.viewed_at.isoformat(),
+            "task_id": view.task_id,
+            "attempt_id": view.attempt_id,
+        })
+    revision_rows = []
+    for revision in db.query(RevisionEvent).order_by(RevisionEvent.created_at.asc()).all():
+        attempt = db.query(Attempt).filter(Attempt.id == revision.new_attempt_id).first()
+        policy = condition_policy(attempt.group_id if attempt else "G3")
+        revision_rows.append({
+            "student_id": revision.participant_id,
+            "condition_group": policy["condition_group"],
+            "task_id": revision.task_id,
+            "previous_attempt_id": revision.previous_attempt_id,
+            "new_attempt_id": revision.new_attempt_id,
+            "score_delta": revision.score_delta,
+            "target_word_improved": revision.repeated_issue_reduced,
+            "created_at": revision.created_at.isoformat(),
+        })
     export_sets = {
         "participants.csv": [clean_model(p) for p in db.query(Participant).all()],
         "users.csv": [clean_model(row) for row in db.query(User).all()],
@@ -1544,14 +1666,14 @@ def export_full(db: Session = Depends(get_db)):
             "tts_status": getattr(task, "tts_status", "browser_only"),
             "tts_voice": getattr(task, "tts_voice", "browser-default"),
         } for task in db.query(Task).all()],
-        "attempts.csv": [_attempt_to_dict(db, a) for a in db.query(Attempt).all()],
+        "attempts.csv": attempts_rows,
         "pronunciation_evidence.csv": [clean_model(row) for row in db.query(PronunciationEvidence).all()],
         "diagnosis_records.csv": [clean_model(row) for row in db.query(DiagnosisRecord).all()],
-        "feedback_items.csv": [clean_model(f) for f in db.query(FeedbackItem).all()],
+        "ai_feedback.csv": ai_rows,
         "teacher_feedback.csv": [clean_model(row) for row in db.query(TeacherFeedback).all()],
         "peer_feedback.csv": [clean_model(row) for row in db.query(PeerFeedback).all()],
-        "feedback_views.csv": [clean_model(v) for v in db.query(FeedbackView).all()],
-        "revision_events.csv": [clean_model(r) for r in db.query(RevisionEvent).all()],
+        "feedback_views.csv": view_rows,
+        "revision_events.csv": revision_rows,
         "learner_states.csv": [clean_model(s) for s in db.query(LearnerState).all()],
         "learner_progress.csv": [{"user_code": user.user_code, **student_progress(user.user_code, db)} for user in db.query(User).filter(User.role == "student").all()],
         "annotations.csv": [clean_model(a) for a in db.query(Annotation).all()],
@@ -1610,7 +1732,25 @@ def export_tts_audio_status(db: Session = Depends(get_db)):
 
 @router.get("/exports/ai-feedback")
 def export_ai_feedback(db: Session = Depends(get_db)):
-    return _write_csv(db, "ai_feedback", [clean_model(row) for row in db.query(FeedbackItem).all()])
+    rows = []
+    for item in db.query(FeedbackItem).order_by(FeedbackItem.created_at.asc()).all():
+        attempt = db.query(Attempt).filter(Attempt.id == item.attempt_id).first()
+        feedback = _json(item.original_feedback_json, "{}")
+        policy = condition_policy(attempt.group_id if attempt else feedback.get("condition_group", "G3"))
+        rows.append({
+            "student_id": item.participant_id,
+            "condition_group": feedback.get("condition_group", policy["condition_group"]),
+            "task_id": item.task_id,
+            "attempt_id": item.attempt_id,
+            "word_to_practise": feedback.get("word_to_practise", feedback.get("word_label", "")),
+            "target_sound": feedback.get("target_sound", feedback.get("sound_focus_label", "")),
+            "practice_suggestion": feedback.get("practice_suggestion", feedback.get("action_guidance", "")),
+            "revision_goal": feedback.get("revision_goal", ""),
+            "score_value": feedback.get("practice_score") if feedback.get("show_score", policy["show_score"]) else "",
+            "score_hidden": not bool(feedback.get("show_score", policy["show_score"])),
+            "comment_hidden": not bool(feedback.get("show_comment", policy["show_comment"])),
+        })
+    return _write_csv(db, "ai_feedback", rows)
 
 
 @router.get("/exports/teacher-feedback")
@@ -1625,7 +1765,26 @@ def export_peer_feedback(db: Session = Depends(get_db)):
 
 @router.get("/exports/feedback-views")
 def export_feedback_views(db: Session = Depends(get_db)):
-    return _write_csv(db, "feedback_views", [clean_model(row) for row in db.query(FeedbackView).all()])
+    rows = []
+    for view in db.query(FeedbackView).order_by(FeedbackView.viewed_at.asc()).all():
+        attempt = db.query(Attempt).filter(Attempt.id == view.attempt_id).first()
+        feedback = _json(attempt.feedback_json, "{}") if attempt else {}
+        policy = condition_policy(attempt.group_id if attempt else "G3")
+        if feedback.get("show_score"):
+            feedback_type = "score"
+        elif feedback.get("show_comment"):
+            feedback_type = "comment"
+        else:
+            feedback_type = "practice"
+        rows.append({
+            "student_id": view.participant_id,
+            "condition_group": feedback.get("condition_group", policy["condition_group"]),
+            "feedback_type": feedback_type,
+            "viewed_at": view.viewed_at.isoformat(),
+            "task_id": view.task_id,
+            "attempt_id": view.attempt_id,
+        })
+    return _write_csv(db, "feedback_views", rows)
 
 
 @router.get("/exports/learner-progress")
@@ -1635,6 +1794,25 @@ def export_learner_progress(db: Session = Depends(get_db)):
         progress = student_progress(user.user_code, db)
         rows.append({"user_code": user.user_code, **progress})
     return _write_csv(db, "learner_progress", rows)
+
+
+@router.get("/exports/revision-events")
+def export_revision_events_alias(db: Session = Depends(get_db)):
+    rows = []
+    for revision in db.query(RevisionEvent).order_by(RevisionEvent.created_at.asc()).all():
+        attempt = db.query(Attempt).filter(Attempt.id == revision.new_attempt_id).first()
+        policy = condition_policy(attempt.group_id if attempt else "G3")
+        rows.append({
+            "student_id": revision.participant_id,
+            "condition_group": policy["condition_group"],
+            "task_id": revision.task_id,
+            "previous_attempt_id": revision.previous_attempt_id,
+            "new_attempt_id": revision.new_attempt_id,
+            "score_delta": revision.score_delta,
+            "target_word_improved": revision.repeated_issue_reduced,
+            "created_at": revision.created_at.isoformat(),
+        })
+    return _write_csv(db, "revision_events", rows)
 
 
 @router.get("/exports/peer-review-assignments")

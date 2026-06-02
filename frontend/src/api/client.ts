@@ -59,6 +59,8 @@ export type PilotUser = {
   group_id: number;
   active: boolean;
   created_at?: string;
+  condition_group?: "G0" | "G1" | "G2" | "G3";
+  condition_label?: string;
 };
 
 export type Attempt = {
@@ -81,6 +83,12 @@ export type Attempt = {
   no_speech_detected?: boolean;
   invalid_reasons?: string[];
   feedback_type: string;
+  condition_group?: string;
+  condition_label?: string;
+  show_score?: boolean;
+  show_comment?: boolean;
+  score_shown?: boolean;
+  comment_shown?: boolean;
   feedback_use_state?: string;
   feedback_viewed?: boolean;
   re_recorded?: boolean;
@@ -280,7 +288,7 @@ function getTasks() {
 }
 
 function demoUser(): PilotUser {
-  return { id: 1, user_code: "student001", role: "student", display_name: "Demo Student", class_id: 1, group_id: 1, active: true };
+  return { id: 1, user_code: "student001", role: "student", display_name: "Demo Student", class_id: 1, group_id: 1, condition_group: "G3", condition_label: "Score and comment feedback", active: true };
 }
 
 function demoUsers(): PilotUser[] {
@@ -305,20 +313,18 @@ function demoUserFromPath(path: string) {
 
 function demoConditions() {
   return [
-    ["assessment_only", "Condition A: Assessment-only", false, false, false, false],
-    ["transcript_only", "Condition B: Transcript-only", true, false, false, true],
-    ["score_only", "Condition C: Score-only", true, true, false, true],
-    ["explainable_word_sound_feedback", "Condition D: Explainable word/sound feedback", true, true, true, true],
-    ["adaptive_word_sound_feedback", "Condition E: Adaptive word/sound feedback", true, true, true, true],
-    ["human_validated_phoneme_feedback", "Condition F: Human-validated phoneme feedback", true, true, false, true],
-    ["teacher_orchestrated_feedback", "Condition G: Teacher-orchestrated feedback", true, true, true, true],
-  ].map(([condition_code, condition_name, show_transcript, show_score, show_diagnosis, revision_allowed], index) => ({
+    ["G0", "G0 Practice-only", true, false, false, true],
+    ["G1", "G1 Score-only feedback", true, true, false, true],
+    ["G2", "G2 Comment-only feedback", true, false, true, true],
+    ["G3", "G3 Score + Comment feedback", true, true, true, true],
+  ].map(([condition_code, condition_name, show_transcript, show_score, show_comment, revision_allowed], index) => ({
     id: index + 1,
     condition_code,
     condition_name,
     show_transcript,
     show_score,
-    show_diagnosis,
+    show_comment,
+    show_diagnosis: show_comment,
     revision_allowed,
   }));
 }
@@ -364,7 +370,7 @@ function analyzeAttempt(init: RequestInit) {
   const audio = form.get("audio");
   const audioFile = audio instanceof File ? audio : null;
   const participantId = String(form.get("participant_id") || "sample001");
-  const groupId = String(form.get("group_id") || "explainable");
+  const groupId = normalizeDemoGroup(String(form.get("group_id") || "G3"));
   const taskId = Number(form.get("task_id") || 1);
   const task = getTasks().find((item) => item.id === taskId) || getTasks()[0];
   const transcript = String(form.get("transcript_hint") || "");
@@ -399,7 +405,13 @@ function analyzeAttempt(init: RequestInit) {
     valid_audio: !noSpeech,
     no_speech_detected: noSpeech,
     invalid_reasons: noSpeech ? ["demo_mode_no_transcript_hint", "no_real_backend_connected"] : [],
-    feedback_type: noSpeech ? "invalid_audio" : groupId === "control" ? "score_only" : "explainable",
+    condition_group: groupId,
+    condition_label: demoGroupLabel(groupId),
+    feedback_type: noSpeech ? "invalid_audio" : String(feedback.feedback_type || "score_plus_comment"),
+    show_score: Boolean(feedback.show_score),
+    show_comment: Boolean(feedback.show_comment),
+    score_shown: feedback.practice_score !== null && feedback.practice_score !== undefined,
+    comment_shown: Boolean(feedback.show_comment && feedback.comment),
     feedback,
     alignment: { ...alignment, inserted_words: [] },
     asr_sanity: {
@@ -530,53 +542,49 @@ function invalidDemoFeedback(scoreBreakdown: ScoreResult = invalidScoreBreakdown
 }
 
 function feedbackFor(groupId: string, score: number, alignment: ReturnType<typeof align>, speechRate: number, pauses: number, scoreBreakdown: ScoreResult = scoreBreakdownFor(alignment.word_match_score, alignment.missing_words.length, alignment.substitutions.length, speechRate, pauses)): Record<string, unknown> {
-  if (groupId === "control") {
-    return { overall_score: score, practice_score: score, score_breakdown: scoreBreakdown.score_breakdown, score_note: scoreBreakdown.score_note, simulated: true, score_label: "simulated practice score", demo_notice: "Demo mode: no real audio analysis is running.", comment: `Your simulated practice score is ${score}. This is based only on the transcript hint, not on audio.` };
-  }
+  const group = normalizeDemoGroup(groupId);
   const issue = alignment.missing_words[0] || alignment.substitutions[0]?.expected || "";
-  if (issue) {
-    return {
-      overall_score: score,
-      practice_score: score,
-      score_breakdown: scoreBreakdown.score_breakdown,
-      score_note: scoreBreakdown.score_note,
-      simulated: true,
-      score_label: "simulated practice score",
-      demo_notice: "Demo mode: no real audio analysis is running.",
-      diagnosis: `The word '${issue}' may not have been clearly recognized.`,
-      explanation: "This word carries sentence meaning. If it is unclear, a listener may misunderstand the message.",
-      action_guidance: `Practise '${issue}' three times, then say the full sentence again with steady rhythm.`,
-      revision_instruction: `After re-recording, compare whether '${issue}' is recognized more clearly.`,
-    };
-  }
-  if (speechRate < 70 || speechRate > 180 || pauses > 0) {
-    return {
-      overall_score: score,
-      practice_score: score,
-      score_breakdown: scoreBreakdown.score_breakdown,
-      score_note: scoreBreakdown.score_note,
-      simulated: true,
-      score_label: "simulated practice score",
-      demo_notice: "Demo mode: no real audio analysis is running.",
-      diagnosis: "The reading pace or pausing pattern may affect fluency.",
-      explanation: "A steady pace helps listeners follow the sentence and notice key words.",
-      action_guidance: "Practise the sentence in short chunks, then connect the chunks smoothly.",
-      revision_instruction: "Re-record and compare the speech rate, transcript, and clarity score.",
-    };
-  }
+  const word = issue || "focus word";
+  const comment = issue
+    ? `Practise '${word}', then read the phrase, then read the full sentence again.`
+    : speechRate < 70 || speechRate > 180 || pauses > 0
+      ? "Practise the sentence in short chunks, then connect the chunks smoothly."
+      : "Listen to the model audio, repeat the focus words, then re-record the sentence.";
+  const showScore = group === "G1" || group === "G3";
+  const showComment = group === "G2" || group === "G3";
   return {
-    overall_score: score,
-    practice_score: score,
+    condition_group: group,
+    condition_label: demoGroupLabel(group),
+    feedback_type: group === "G0" ? "practice_only" : group === "G1" ? "score_only" : group === "G2" ? "comment_only" : "score_plus_comment",
+    show_score: showScore,
+    show_comment: showComment,
+    overall_score: showScore ? score : null,
+    practice_score: showScore ? score : null,
     score_breakdown: scoreBreakdown.score_breakdown,
     score_note: scoreBreakdown.score_note,
+    score_hidden: !showScore,
+    comment_hidden: !showComment,
     simulated: true,
     score_label: "simulated practice score",
     demo_notice: "Demo mode: no real audio analysis is running.",
-    diagnosis: "Most target words were recognized clearly in this attempt.",
-    explanation: "Clear recognition suggests the main words were understandable.",
-    action_guidance: "Repeat once more while keeping the same clarity and smooth rhythm.",
-    revision_instruction: "Use the next attempt to check whether the clarity score remains stable or improves.",
+    word_to_practise: word,
+    target_sound: "",
+    practice_suggestion: comment,
+    revision_goal: issue ? `Try to make '${word}' clearer in your next recording.` : "Try to make the focus word easier to recognize.",
+    comment: showComment ? comment : "",
   };
+}
+
+function normalizeDemoGroup(value: string) {
+  const key = value.toUpperCase();
+  if (["G0", "PRACTICE_ONLY", "PRACTICE", "ASSESSMENT_ONLY"].includes(key)) return "G0";
+  if (["G1", "SCORE_ONLY", "CONTROL"].includes(key)) return "G1";
+  if (["G2", "COMMENT_ONLY", "TRANSCRIPT_ONLY"].includes(key)) return "G2";
+  return "G3";
+}
+
+function demoGroupLabel(group: string) {
+  return group === "G0" ? "Practice" : group === "G1" ? "Score feedback" : group === "G2" ? "Comment feedback" : "Score and comment feedback";
 }
 
 function average(values: number[]) {

@@ -51,9 +51,16 @@ class Condition(Base):
     condition_code = Column(String, default="")
     show_transcript = Column(Boolean, default=True)
     show_score = Column(Boolean, default=True)
+    show_comment = Column(Boolean, default=True)
+    show_word_focus = Column(Boolean, default=True)
+    show_sound_focus = Column(Boolean, default=True)
+    show_practice_suggestion = Column(Boolean, default=True)
     show_diagnosis = Column(Boolean, default=False)
     show_explanation = Column(Boolean, default=False)
     show_action_guidance = Column(Boolean, default=False)
+    allow_revision = Column(Boolean, default=True)
+    enable_teacher_feedback = Column(Boolean, default=False)
+    enable_peer_feedback = Column(Boolean, default=False)
     adaptive_feedback = Column(Boolean, default=False)
     human_validation_required = Column(Boolean, default=False)
     llm_verbalization_enabled = Column(Boolean, default=False)
@@ -481,6 +488,15 @@ def migrate_sqlite_columns():
         "studies": {
             "locked": "BOOLEAN DEFAULT 0",
         },
+        "conditions": {
+            "show_comment": "BOOLEAN DEFAULT 1",
+            "show_word_focus": "BOOLEAN DEFAULT 1",
+            "show_sound_focus": "BOOLEAN DEFAULT 1",
+            "show_practice_suggestion": "BOOLEAN DEFAULT 1",
+            "allow_revision": "BOOLEAN DEFAULT 1",
+            "enable_teacher_feedback": "BOOLEAN DEFAULT 0",
+            "enable_peer_feedback": "BOOLEAN DEFAULT 0",
+        },
         "attempts": {
             "study_id": "INTEGER DEFAULT 1",
             "condition_id": "INTEGER DEFAULT 4",
@@ -562,7 +578,7 @@ def seed_pilot_accounts():
         db.add_all([teacher, student, peer, admin])
         db.commit()
         class_row.teacher_user_id_optional = teacher.id
-        participant = Participant(participant_id="student001", participant_code="student001", group_id="ai_plus_teacher_feedback", group_label="AI plus teacher feedback", class_id=str(class_row.id))
+        participant = Participant(participant_id="student001", participant_code="student001", group_id="G3", group_label="G3 Score + Comment feedback", class_id=str(class_row.id), condition_id=4)
         db.add(participant)
         db.commit()
     finally:

@@ -1,22 +1,23 @@
 from app.services.feedback.feedback_policy import condition_policy, derive_feedback_use_state, filter_feedback_for_condition
 
 
-def test_assessment_only_hides_feedback():
-    result = filter_feedback_for_condition("assessment_only", "hello", 80, {"diagnosis": "hidden"})
-    assert result["asr_transcript"] == ""
+def test_practice_only_hides_score_and_comment():
+    result = filter_feedback_for_condition("G0", "hello", 80, {"diagnosis": "hidden"})
     assert result["overall_score"] is None
-    assert result["feedback_type"] == "assessment_only"
+    assert result["comment"] == ""
+    assert result["feedback_type"] == "practice_only"
 
 
-def test_explainable_shows_structured_sections():
+def test_score_plus_comment_shows_practical_comment():
     result = filter_feedback_for_condition(
-        "explainable",
+        "G3",
         "hello",
         80,
-        {"diagnosis": "d", "explanation": "e", "action_guidance": "a", "revision_instruction": "r"},
+        {"word_label": "thought", "sound_focus_label": "/th/", "practice_suggestion": "Practise /th/ in thought.", "revision_goal": "Make thought clearer."},
     )
-    assert result["show_diagnosis"] is True
-    assert result["diagnosis"] == "d"
+    assert result["show_score"] is True
+    assert result["show_comment"] is True
+    assert result["word_to_practise"] == "thought"
 
 
 def test_feedback_use_state_derivation():
@@ -28,4 +29,4 @@ def test_feedback_use_state_derivation():
 
 
 def test_condition_alias():
-    assert condition_policy("control")["feedback_type"] == "score_only"
+    assert condition_policy("control")["condition_group"] == "G1"

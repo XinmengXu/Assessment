@@ -3,14 +3,13 @@ import { api, exportUrl } from "../api/client";
 import { Download, Plus, Shuffle } from "lucide-react";
 
 type Study = { id: number; study_name: string; description: string; active: boolean };
-type Condition = { id: number; condition_code: string; condition_name: string; show_transcript: boolean; show_score: boolean; show_diagnosis: boolean; revision_allowed: boolean };
+type Condition = { id: number; condition_code: string; condition_name: string; show_transcript: boolean; show_score: boolean; show_comment: boolean; show_word_focus?: boolean; show_sound_focus?: boolean; revision_allowed: boolean };
 
 export function StudyDesign() {
   const [studies, setStudies] = useState<Study[]>([]);
   const [conditions, setConditions] = useState<Condition[]>([]);
   const [participantId, setParticipantId] = useState("");
-  const [condition, setCondition] = useState("explainable_word_sound_feedback");
-  const [importResult, setImportResult] = useState<{ imported?: number; errors?: { row: number; reason: string }[] } | null>(null);
+  const [condition, setCondition] = useState("G3");
 
   function load() {
     api<Study[]>("/studies").then(setStudies);
@@ -30,19 +29,11 @@ export function StudyDesign() {
     setParticipantId("");
   }
 
-  async function uploadExternalScores(file: File | null) {
-    if (!file) return;
-    const body = new FormData();
-    body.append("file", file);
-    const result = await api<{ imported: number; errors: { row: number; reason: string }[] }>("/external-scores/import", { method: "POST", body });
-    setImportResult(result);
-  }
-
   return (
     <section className="page-grid">
       <div className="panel">
         <div className="section-head">
-          <div><h2>Study Design</h2><p>Configure studies, conditions, and participant assignment.</p></div>
+          <div><h2>Study Setup</h2><p>Configure the four-group feedback information experiment.</p></div>
           <a className="button-link" href={exportUrl("/exports/study-design")}><Download size={18} /> Export</a>
         </div>
         <button className="primary" onClick={createStudy}><Plus size={18} /> Create study</button>
@@ -58,12 +49,12 @@ export function StudyDesign() {
       </div>
 
       <div className="panel">
-        <h2>Default Conditions A-G</h2>
+        <h2>Four-Group Design</h2>
         <div className="task-list">
           {conditions.map((item) => (
             <button key={item.id}>
               <strong>{item.condition_name}</strong>
-              <span>Transcript {String(item.show_transcript)} - Score {String(item.show_score)} - Diagnosis {String(item.show_diagnosis)}</span>
+              <span>{summary(item)}</span>
               <small>Revision {item.revision_allowed ? "allowed" : "blocked"}</small>
             </button>
           ))}
@@ -74,24 +65,13 @@ export function StudyDesign() {
           <button className="primary" onClick={assign}><Shuffle size={18} /> Assign</button>
         </div>
       </div>
-
-      <div className="panel">
-        <div className="section-head">
-          <div><h2>External Scores Import</h2><p>Import model or human assessment CSV as pronunciation evidence.</p></div>
-          <a className="button-link" href={exportUrl("/external-scores/template")}><Download size={18} /> Template</a>
-        </div>
-        <label className="file-button">
-          Upload CSV
-          <input type="file" accept=".csv,text/csv" onChange={(event) => uploadExternalScores(event.target.files?.[0] || null)} />
-        </label>
-        {importResult && (
-          <div className="feedback-box">
-            <strong>Import result</strong>
-            <p>Imported rows: {importResult.imported || 0}</p>
-            {(importResult.errors || []).map((error) => <p key={`${error.row}-${error.reason}`}>Row {error.row}: {error.reason}</p>)}
-          </div>
-        )}
-      </div>
     </section>
   );
+}
+
+function summary(item: Condition) {
+  if (item.condition_code === "G0") return "TTS only, no score, no comment";
+  if (item.condition_code === "G1") return "TTS + practice clarity score";
+  if (item.condition_code === "G2") return "TTS + practical comment";
+  return "TTS + practice clarity score + practical comment";
 }

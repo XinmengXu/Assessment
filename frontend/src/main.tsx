@@ -21,8 +21,8 @@ type Page =
   | "practice"
   | "my-feedback"
   | "my-progress"
+  | "student-list"
   | "give-feedback"
-  | "class-review"
   | "class-summary"
   | "peer-tasks"
   | "submitted-reviews"
@@ -34,7 +34,7 @@ type Page =
 
 const DEFAULT_PAGE: Record<UserRole, Page> = {
   student: "practice",
-  teacher: "give-feedback",
+  teacher: "student-list",
   peer_reviewer: "peer-tasks",
   researcher_admin: "study-setup",
 };
@@ -46,8 +46,8 @@ const roleNav = {
     ["my-progress", BarChart3, "My Progress"],
   ],
   teacher: [
+    ["student-list", Users, "Student List"],
     ["give-feedback", ClipboardCheck, "Give Feedback"],
-    ["class-review", ClipboardList, "Class Review"],
     ["class-summary", BarChart3, "Class Summary"],
   ],
   peer_reviewer: [
@@ -68,6 +68,7 @@ function App() {
   const [page, setPage] = useState<Page>("practice");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [latestAttempt, setLatestAttempt] = useState<Attempt | null>(null);
+  const [selectedTeacherAttempt, setSelectedTeacherAttempt] = useState<Attempt | null>(null);
   const [backendStatus, setBackendStatus] = useState<BackendStatus>(getBackendStatus());
   const [error, setError] = useState("");
 
@@ -151,7 +152,7 @@ function App() {
         {page === "practice" && (
           <LearnerPractice
             participantId={user.user_code}
-            groupId="ai_plus_teacher_feedback"
+            groupId={user.condition_group || "G3"}
             sessionId="pilot-session"
             tasks={tasks}
             userRole={user.role}
@@ -160,8 +161,8 @@ function App() {
         )}
         {page === "my-feedback" && <StudentFeedback user={user} latestAttempt={latestAttempt} />}
         {page === "my-progress" && <StudentProgress user={user} />}
-        {page === "give-feedback" && <TeacherFeedbackPage user={user} />}
-        {page === "class-review" && <ClassReview user={user} />}
+        {page === "student-list" && <TeacherStudentList user={user} onReview={(attempt) => { setSelectedTeacherAttempt(attempt); setPage("give-feedback"); }} />}
+        {page === "give-feedback" && <TeacherFeedbackPage user={user} selectedAttempt={selectedTeacherAttempt} onSelectAttempt={setSelectedTeacherAttempt} />}
         {page === "class-summary" && <ClassSummary user={user} />}
         {page === "peer-tasks" && <PeerReviewTasks user={user} />}
         {page === "submitted-reviews" && <SubmittedReviews user={user} />}
@@ -217,45 +218,114 @@ function StudentProgress({ user }: { user: PilotUser }) {
   return <MetricsPage title="My Progress" data={progress} />;
 }
 
-function TeacherFeedbackPage({ user }: { user: PilotUser }) {
+function TeacherStudentList({ user, onReview }: { user: PilotUser; onReview: (attempt: Attempt) => void }) {
   const [rows, setRows] = useState<Attempt[]>([]);
   useEffect(() => { api<Attempt[]>(`/teacher/submissions?user_code=${user.user_code}`).then(setRows); }, [user.user_code]);
+  const students = [...rows.reduce((map, attempt) => {
+    const item = map.get(attempt.participant_id) || { student_id: attempt.participant_id, completed: 0, revisions: 0, latest: attempt, attempts: [] as Attempt[] };
+    item.completed += 1;
+    item.revisions += attempt.attempt_number > 1 ? 1 : 0;
+    item.latest = attempt;
+    item.attempts.push(attempt);
+    map.set(attempt.participant_id, item);
+    return map;
+  }, new Map<string, { student_id: string; completed: number; revisions: number; latest: Attempt; attempts: Attempt[] }>()).values()];
+  return (
+    <section className="panel">
+      <h2>Student List</h2>
+      <table>
+        <thead><tr><th>Student ID</th><th>Class</th><th>Group</th><th>Completed tasks</th><th>Pending teacher feedback</th><th>Revisions</th><th>Repeated focus sounds</th><th>Last activity</th><th>Action</th></tr></thead>
+        <tbody>{students.map((student) => (
+          <tr key={student.student_id}>
+            <td>{student.student_id}</td>
+            <td>{user.class_id || "-"}</td>
+            <td>{student.latest.condition_group || student.latest.group_id}</td>
+            <td>{new Set(student.attempts.map((attempt) => attempt.task_id)).size}</td>
+            <td>{student.attempts.filter((attempt) => (attempt.score ?? 0) < 70).length}</td>
+            <td>{student.revisions}</td>
+            <td>{student.attempts.flatMap((attempt) => attempt.missing_words || []).slice(0, 3).join(", ") || "-"}</td>
+            <td>{new Date(student.latest.created_at).toLocaleString()}</td>
+            <td><button className="file-button" onClick={() => onReview(student.latest)}>Review</button></td>
+          </tr>
+        ))}</tbody>
+      </table>
+    </section>
+  );
+}
+
+function TeacherFeedbackPage({ user, selectedAttempt, onSelectAttempt }: { user: PilotUser; selectedAttempt: Attempt | null; onSelectAttempt: (attempt: Attempt) => void }) {
+  const [rows, setRows] = useState<Attempt[]>([]);
+  useEffect(() => { api<Attempt[]>(`/teacher/submissions?user_code=${user.user_code}`).then((items) => { setRows(items); if (!selectedAttempt && items[0]) onSelectAttempt(items[0]); }); }, [user.user_code]);
+  const attempt = selectedAttempt || rows[0] || null;
+  if (!attempt) {
+    return <section className="panel"><h2>Give Feedback</h2><p className="muted">Select a student from Student List before reviewing recordings.</p></section>;
+  }
   return (
     <section className="stack">
-      <div className="panel"><h2>Give Feedback</h2><p className="muted">Listen to the student recording, compare with the model pronunciation, then draft and release feedback.</p></div>
-      {rows.map((attempt) => <TeacherFeedbackCard key={attempt.id} attempt={attempt} user={user} />)}
+      <div className="panel"><h2>Give Feedback</h2><p className="muted">Review one selected student attempt at a time.</p></div>
+      <label>Selected attempt<select value={attempt.id} onChange={(event) => { const next = rows.find((row) => row.id === Number(event.target.value)); if (next) onSelectAttempt(next); }}>{rows.map((row) => <option value={row.id} key={row.id}>{row.participant_id} · Task {row.task_id} · Attempt {row.attempt_number}</option>)}</select></label>
+      <TeacherFeedbackCard attempt={attempt} user={user} />
     </section>
   );
 }
 
 function TeacherFeedbackCard({ attempt, user }: { attempt: Attempt; user: PilotUser }) {
   const [comment, setComment] = useState("");
+  const [recommendedPractice, setRecommendedPractice] = useState("");
+  const [word, setWord] = useState("");
+  const [sound, setSound] = useState("");
+  const [observedSound, setObservedSound] = useState("");
+  const [requestRerecording, setRequestRerecording] = useState(true);
+  const [ratings, setRatings] = useState({ pronunciation: 3, fluency: 3, comprehensibility: 3, overall: 3 });
   const [saved, setSaved] = useState("");
   async function save(release: boolean) {
     const feedback = await api<Record<string, unknown>>("/teacher/feedback", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ teacher_user_id: user.id, participant_id: attempt.participant_id, task_id: attempt.task_id, attempt_id: attempt.id, pronunciation_rating: 3, fluency_rating: 3, comprehensibility_rating: 3, comment, action_guidance: comment, status: release ? "released" : "draft" }),
+      body: JSON.stringify({
+        teacher_user_id: user.id,
+        participant_id: attempt.participant_id,
+        task_id: attempt.task_id,
+        attempt_id: attempt.id,
+        pronunciation_rating: ratings.pronunciation,
+        fluency_rating: ratings.fluency,
+        comprehensibility_rating: ratings.comprehensibility,
+        overall_rating: ratings.overall,
+        target_word: word,
+        target_phoneme: sound,
+        observed_phoneme: observedSound,
+        comment,
+        action_guidance: `${recommendedPractice}${requestRerecording ? " Please re-record after practising." : ""}`,
+        status: release ? "released" : "draft",
+      }),
     });
     if (release) await api(`/teacher/feedback/${feedback.id}/release`, { method: "POST" });
     setSaved(release ? "Released to student" : "Draft saved");
   }
   return (
     <article className="panel">
+      <p className="pill">Student {attempt.participant_id} · Task {attempt.task_id} · Attempt {attempt.attempt_number}</p>
       <h3>{attempt.target_text}</h3>
-      <TtsButtons sentence={attempt.target_text} focusWords={[]} />
+      <p className="muted">AI group: {attempt.condition_label || attempt.condition_group || attempt.group_id}</p>
+      <TtsButtons sentence={attempt.target_text} focusWords={attempt.missing_words?.slice(0, 3) || []} />
       <audio controls src={apiAssetUrl(attempt.audio_url || `/attempts/${attempt.id}/audio`)} />
       <p className="transcript">ASR transcript: {attempt.asr_transcript || "ASR returned empty transcript"}</p>
-      <label>Teacher feedback<textarea value={comment} onChange={(event) => setComment(event.target.value)} /></label>
+      <div className="feedback-box"><strong>AI feedback shown to student</strong><pre>{JSON.stringify(attempt.feedback, null, 2)}</pre></div>
+      <div className="metrics-grid">
+        <label>Pronunciation clarity rating<input type="number" min="1" max="5" value={ratings.pronunciation} onChange={(event) => setRatings({ ...ratings, pronunciation: Number(event.target.value) })} /></label>
+        <label>Fluency rating<input type="number" min="1" max="5" value={ratings.fluency} onChange={(event) => setRatings({ ...ratings, fluency: Number(event.target.value) })} /></label>
+        <label>Comprehensibility rating<input type="number" min="1" max="5" value={ratings.comprehensibility} onChange={(event) => setRatings({ ...ratings, comprehensibility: Number(event.target.value) })} /></label>
+        <label>Overall rating<input type="number" min="1" max="5" value={ratings.overall} onChange={(event) => setRatings({ ...ratings, overall: Number(event.target.value) })} /></label>
+      </div>
+      <label>Word needing attention<input value={word} onChange={(event) => setWord(event.target.value)} /></label>
+      <label>Sound needing attention<input value={sound} onChange={(event) => setSound(event.target.value)} placeholder="th, r, final_t" /></label>
+      <label>Observed sound optional<input value={observedSound} onChange={(event) => setObservedSound(event.target.value)} placeholder="Only if human-observed" /></label>
+      <label>Written feedback<textarea value={comment} onChange={(event) => setComment(event.target.value)} /></label>
+      <label>Recommended practice<textarea value={recommendedPractice} onChange={(event) => setRecommendedPractice(event.target.value)} /></label>
+      <label className="check-row"><input type="checkbox" checked={requestRerecording} onChange={(event) => setRequestRerecording(event.target.checked)} /> Request re-recording</label>
       <div className="actions"><button className="file-button" onClick={() => save(false)}>Save draft</button><button className="primary" onClick={() => save(true)}>Release</button>{saved && <span className="status-text">{saved}</span>}</div>
     </article>
   );
-}
-
-function ClassReview({ user }: { user: PilotUser }) {
-  const [data, setData] = useState<Record<string, unknown>>({});
-  useEffect(() => { api<Record<string, unknown>>(`/teacher/class-review?user_code=${user.user_code}`).then(setData); }, [user.user_code]);
-  return <MetricsPage title="Class Review" data={data} />;
 }
 
 function ClassSummary({ user }: { user: PilotUser }) {

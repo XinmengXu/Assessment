@@ -1,6 +1,6 @@
 # Speech-AI Formative Speaking Practice Platform
 
-A runnable, role-based platform for controlled L2 read-aloud speaking practice. It supports student practice, model pronunciation playback, ASR-supported preliminary formative feedback, teacher feedback, peer review, account-based data separation, and clean research export.
+A runnable, role-based platform for controlled L2 read-aloud speaking practice. The first formal study is a focused feedback-information comparison: practice-only, score-only, comment-only, and score-plus-comment feedback.
 
 This is not a high-stakes speaking assessment system. Automatic scores and automatic diagnoses are formative practice indicators only. Human ratings are needed for strong learning-outcome claims.
 
@@ -9,14 +9,14 @@ This is not a high-stakes speaking assessment system. Automatic scores and autom
 - Pilot login uses `user_code` only.
 - Roles: `student`, `teacher`, `peer_reviewer`, `researcher_admin`.
 - Student navigation: Practice, My Feedback, My Progress.
-- Teacher navigation: Give Feedback, Class Review, Class Summary.
+- Teacher navigation: Student List, Give Feedback, Class Summary.
 - Peer reviewer navigation: Peer Review Tasks, Submitted Reviews.
 - Researcher/admin navigation: Study Setup, Task Bank, Users and Groups, Data Export, System Status.
-- Students select a read-aloud task, listen to model pronunciation, record or upload audio, submit to FastAPI, and view separated AI/teacher/peer feedback.
+- Students select a read-aloud task, listen to model pronunciation, record or upload audio, submit to FastAPI, and see feedback according to their assigned G0-G3 group.
 - TTS model pronunciation is available by default through browser SpeechSynthesis fallback and is clearly labelled as a browser-generated reference voice when backend cached TTS is unavailable.
 - Backend stores audio locally and analyzes transcript match, duration, speech rate, pauses, missing words, substitutions, ASR sanity warnings, invalid-audio status, and a lightweight practice clarity score.
-- Teachers can draft and release feedback with ratings, comments, target sounds, observed sounds, and action guidance.
-- Peer reviewers can submit supportive peer feedback for assigned review tasks.
+- Teachers can optionally draft and release human feedback with ratings, comments, target sounds, observed sounds, and action guidance. Teacher feedback is not a condition label.
+- Peer reviewers can optionally submit supportive peer feedback for assigned review tasks. Peer feedback is separate from the main four-group experiment.
 - Researcher/admin users can create/import/export users, manage classes/groups/tasks, check system status, and export clean study data.
 - Mock ASR mode runs without downloading a speech model. Optional faster-whisper integration can be enabled for real ASR.
 
@@ -28,6 +28,27 @@ teacher001
 peer001
 admin001
 ```
+
+## First Formal Experiment: G0-G3
+
+The normal visible experimental groups are:
+
+- `G0 practice_only`: TTS model audio, recording, re-recording, no AI score, no AI comment.
+- `G1 score_only`: TTS model audio plus `Practice clarity score`; no diagnostic comment.
+- `G2 comment_only`: TTS model audio plus word/sound practice comment; no score.
+- `G3 score_plus_comment`: TTS model audio plus score and practical comment.
+
+Do not use labels such as human-validated feedback, teacher-orchestrated feedback, adaptive feedback, or LLM-verbalized feedback as student-facing or teacher-facing condition names. Teacher and peer feedback are optional workflows controlled separately from the G0-G3 comparison.
+
+Assign a student to a group:
+
+```powershell
+Invoke-RestMethod -Method Post -ContentType "application/json" `
+  -Uri http://127.0.0.1:8000/api/users `
+  -Body '{"user_code":"s001","role":"student","display_name":"Student 001","class_id":1,"group_id":1,"condition_group":"G2"}'
+```
+
+Or use Study Setup in the admin UI and select `G0`, `G1`, `G2`, or `G3`.
 
 ## Tech Stack
 
@@ -252,11 +273,19 @@ Use the dashboard buttons or these endpoints:
 - `GET /api/exports/peer-feedback`
 - `GET /api/exports/feedback-views`
 - `GET /api/exports/revisions`
+- `GET /api/exports/revision-events`
 - `GET /api/exports/learner-progress`
 - `GET /api/exports/teacher-orchestration-events`
 - `GET /api/exports/peer-review-assignments`
 
 Exports are also written under `data/exports`.
+
+For G0/G1/G2/G3 analysis:
+
+- `attempts.csv` includes `student_id`, `condition_group`, `show_score`, `show_comment`, `attempt_number`, `task_id`, `score_shown`, `comment_shown`, `revision_allowed`, and `created_at`.
+- `ai_feedback.csv` includes `word_to_practise`, `target_sound`, `practice_suggestion`, `revision_goal`, `score_value`, `score_hidden`, and `comment_hidden`.
+- `feedback_views.csv` separates `score`, `comment`, `teacher`, `peer`, or practice feedback views where available.
+- `revision_events.csv` includes `condition_group`, previous/new attempt IDs, score delta, and target-word improvement proxy.
 
 ## Important Research Note
 
