@@ -16,6 +16,7 @@ from .analysis.feedback_generator import generate_feedback
 from .analysis.scoring import compute_score
 from .analysis.text_alignment import align_text
 from .config import AUDIO_DIR, EXPORT_DIR
+from .config import ASR_MODE, WHISPER_COMPUTE_TYPE, WHISPER_DEVICE, WHISPER_MODEL_SIZE
 from .database import (
     Annotation,
     Attempt,
@@ -136,7 +137,15 @@ def _detect_issue_types(task, alignment, features):
 
 @router.get("/health")
 def health():
-    return {"status": "ok", "mock_mode": True, "asr_adapter": "mock_asr", "app_version": "0.2.0"}
+    return {
+        "status": "ok",
+        "mock_mode": ASR_MODE == "mock",
+        "asr_adapter": ASR_MODE,
+        "whisper_model_size": WHISPER_MODEL_SIZE if ASR_MODE == "faster_whisper" else "",
+        "whisper_device": WHISPER_DEVICE if ASR_MODE == "faster_whisper" else "",
+        "whisper_compute_type": WHISPER_COMPUTE_TYPE if ASR_MODE == "faster_whisper" else "",
+        "app_version": "0.2.0",
+    }
 
 
 @router.post("/participants", response_model=ParticipantRead)

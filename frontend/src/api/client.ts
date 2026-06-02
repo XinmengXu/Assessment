@@ -115,7 +115,7 @@ export function exportUrl(path: string) {
 }
 
 function shouldUseDemoFallback() {
-  return window.location.hostname.endsWith("github.io") || API_BASE === "demo";
+  return API_BASE === "demo" || (window.location.hostname.endsWith("github.io") && API_BASE === "/api");
 }
 
 export function isDemoMode() {
