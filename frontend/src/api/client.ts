@@ -30,16 +30,17 @@ export type Attempt = {
   missing_words: string[];
   substitutions: { expected: string; heard: string }[];
   long_pause_count: number;
+  no_speech_detected?: boolean;
   feedback_type: string;
   feedback_use_state?: string;
   feedback_viewed?: boolean;
   re_recorded?: boolean;
   task_type?: string;
   condition?: string;
-  feedback: Record<string, string | number>;
+  feedback: Record<string, string | number | boolean | null>;
   created_at: string;
   target_text: string;
-  score: number;
+  score: number | null;
   improvement: number;
 };
 
@@ -115,6 +116,10 @@ export function exportUrl(path: string) {
 
 function shouldUseDemoFallback() {
   return window.location.hostname.endsWith("github.io") || API_BASE === "demo";
+}
+
+export function isDemoMode() {
+  return shouldUseDemoFallback();
 }
 
 async function demoApi<T>(path: string, init?: RequestInit): Promise<T> {
@@ -211,11 +216,12 @@ function analyzeAttempt(init: RequestInit) {
   const duration = 3 + Math.max(words(transcript).length * 0.42, 1);
   const speechRate = Math.round((words(transcript).length / duration) * 60 * 100) / 100;
   const longPauses = duration > words(transcript).length * 0.8 + 3 ? 1 : 0;
-  const score = scoreAttempt(alignment.word_match_score, alignment.missing_words.length, alignment.substitutions.length, speechRate, longPauses);
-  const feedback = feedbackFor(groupId, score, alignment, speechRate, longPauses);
+  const noSpeech = !transcript.trim();
+  const score = noSpeech ? null : scoreAttempt(alignment.word_match_score, alignment.missing_words.length, alignment.substitutions.length, speechRate, longPauses);
+  const feedback = noSpeech ? invalidDemoFeedback() : feedbackFor(groupId, score || 0, alignment, speechRate, longPauses);
   const attempts = getAttempts();
   const previousForTask = attempts.filter((item) => item.participant_id === participantId && item.task_id === taskId);
-  const firstScore = previousForTask[0]?.score ?? score;
+  const firstScore = previousForTask.find((item) => item.score !== null)?.score ?? score ?? 0;
   const attempt: Attempt = {
     id: Math.max(0, ...attempts.map((item) => item.id)) + 1,
     participant_id: participantId,
@@ -230,12 +236,13 @@ function analyzeAttempt(init: RequestInit) {
     missing_words: alignment.missing_words,
     substitutions: alignment.substitutions,
     long_pause_count: longPauses,
-    feedback_type: groupId === "control" ? "score_only" : "explainable",
+    no_speech_detected: noSpeech,
+    feedback_type: noSpeech ? "invalid_audio" : groupId === "control" ? "score_only" : "explainable",
     feedback,
     created_at: new Date().toISOString(),
     target_text: task.target_text,
     score,
-    improvement: Math.round((score - firstScore) * 100) / 100,
+    improvement: noSpeech || score === null ? 0 : Math.round((score - firstScore) * 100) / 100,
   };
   saveAttempts([...attempts, attempt]);
   return attempt;
@@ -292,14 +299,28 @@ function scoreAttempt(match: number, missing: number, substitutions: number, spe
   return Math.max(0, Math.min(100, round(score)));
 }
 
-function feedbackFor(groupId: string, score: number, alignment: ReturnType<typeof align>, speechRate: number, pauses: number): Record<string, string | number> {
+function invalidDemoFeedback(): Record<string, string | number | boolean | null> {
+  return {
+    overall_score: null,
+    no_speech_detected: true,
+    simulated: true,
+    demo_notice: "Demo mode: audio is accepted only for interface testing. No real ASR or speech analysis is running.",
+    feedback_type: "invalid_audio",
+    comment: "No valid speech transcript was provided in demo mode. Run the FastAPI backend with real ASR for speech-based scoring.",
+  };
+}
+
+function feedbackFor(groupId: string, score: number, alignment: ReturnType<typeof align>, speechRate: number, pauses: number): Record<string, string | number | boolean | null> {
   if (groupId === "control") {
-    return { overall_score: score, comment: `Your current clarity score is ${score}. Please practise again and try to read the sentence more clearly.` };
+    return { overall_score: score, simulated: true, score_label: "simulated practice score", demo_notice: "Demo mode: no real audio analysis is running.", comment: `Your simulated practice score is ${score}. This is based only on the transcript hint, not on audio.` };
   }
   const issue = alignment.missing_words[0] || alignment.substitutions[0]?.expected || "";
   if (issue) {
     return {
       overall_score: score,
+      simulated: true,
+      score_label: "simulated practice score",
+      demo_notice: "Demo mode: no real audio analysis is running.",
       diagnosis: `The word '${issue}' may not have been clearly recognized.`,
       explanation: "This word carries sentence meaning. If it is unclear, a listener may misunderstand the message.",
       action_guidance: `Practise '${issue}' three times, then say the full sentence again with steady rhythm.`,
@@ -309,6 +330,9 @@ function feedbackFor(groupId: string, score: number, alignment: ReturnType<typeo
   if (speechRate < 70 || speechRate > 180 || pauses > 0) {
     return {
       overall_score: score,
+      simulated: true,
+      score_label: "simulated practice score",
+      demo_notice: "Demo mode: no real audio analysis is running.",
       diagnosis: "The reading pace or pausing pattern may affect fluency.",
       explanation: "A steady pace helps listeners follow the sentence and notice key words.",
       action_guidance: "Practise the sentence in short chunks, then connect the chunks smoothly.",
@@ -317,6 +341,9 @@ function feedbackFor(groupId: string, score: number, alignment: ReturnType<typeo
   }
   return {
     overall_score: score,
+    simulated: true,
+    score_label: "simulated practice score",
+    demo_notice: "Demo mode: no real audio analysis is running.",
     diagnosis: "Most target words were recognized clearly in this attempt.",
     explanation: "Clear recognition suggests the main words were understandable.",
     action_guidance: "Repeat once more while keeping the same clarity and smooth rhythm.",
@@ -348,7 +375,7 @@ function averageImprovement(attempts: Attempt[]) {
     .filter((items) => items.length > 1)
     .map((items) => {
       const sorted = items.sort((a, b) => a.attempt_number - b.attempt_number);
-      return sorted[sorted.length - 1].score - sorted[0].score;
+      return (sorted[sorted.length - 1].score ?? 0) - (sorted[0].score ?? 0);
     });
   return average(improvements);
 }
@@ -369,7 +396,7 @@ function taskRows() {
   ];
 }
 
-function csvDataUrl(rows: Array<Array<string | number>>) {
+function csvDataUrl(rows: Array<Array<string | number | null>>) {
   const csv = rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
   return `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`;
 }

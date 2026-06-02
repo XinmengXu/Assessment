@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BarChart3, BookOpen, ClipboardCheck, ClipboardList, FlaskConical, History, ShieldCheck } from "lucide-react";
-import { api, Attempt, Task } from "./api/client";
+import { api, Attempt, isDemoMode, Task } from "./api/client";
 import { LearnerPractice } from "./pages/LearnerPractice";
 import { AttemptHistory } from "./pages/AttemptHistory";
 import { Dashboard } from "./pages/Dashboard";
@@ -70,6 +70,11 @@ function App() {
       </aside>
 
       <main>
+        {isDemoMode() && (
+          <div className="demo-banner">
+            Demo mode: audio is not analyzed here. This page only simulates the research workflow. Run the FastAPI backend for real speech analysis.
+          </div>
+        )}
         <header className="topbar">
           <label>
             Participant ID

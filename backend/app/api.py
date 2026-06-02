@@ -105,6 +105,7 @@ def _attempt_to_dict(db, attempt, base_score=None):
         "substitutions": _json(attempt.substitutions_json, "[]"),
         "issue_types_detected": _json(attempt.issue_types_detected_json, "[]"),
         "long_pause_count": attempt.long_pause_count,
+        "no_speech_detected": bool(feedback.get("no_speech_detected", False)),
         "feedback_generated": bool(attempt.feedback_generated),
         "feedback_shown": bool(attempt.feedback_shown),
         "feedback_type": attempt.feedback_type,
@@ -324,8 +325,17 @@ def analyze_attempt(
     score = compute_score(alignment, features)
     issues = _detect_issue_types(task, alignment, features)
     structured = generate_feedback("explainable", score, task.target_text, transcript, alignment, features)
-    feedback = filter_feedback_for_condition(condition_key, transcript, score, structured)
-    if not task.feedback_allowed:
+    if features.get("no_speech_detected"):
+        score = 0
+        feedback = {
+            "overall_score": None,
+            "no_speech_detected": True,
+            "feedback_type": "invalid_audio",
+            "comment": "No valid speech was detected. Please record your voice again.",
+        }
+    else:
+        feedback = filter_feedback_for_condition(condition_key, transcript, score, structured)
+    if not task.feedback_allowed and not features.get("no_speech_detected"):
         feedback = filter_feedback_for_condition("assessment_only", transcript, score, structured)
     feedback_type = feedback["feedback_type"]
     feedback_shown = feedback_type not in ["assessment_only", "human_validated_pending"]

@@ -160,17 +160,22 @@ function FeedbackPanel({ attempt, groupId }: { attempt: Attempt | null; groupId:
   const feedback = attempt.feedback;
   return (
     <aside className="panel feedback-panel">
-      <div className="score-ring">{feedback.overall_score}</div>
+      <div className={attempt.no_speech_detected || attempt.feedback_type === "invalid_audio" ? "score-ring invalid" : "score-ring"}>
+        {feedback.overall_score ?? "N/A"}
+      </div>
       <h2>Automated Feedback</h2>
+      {feedback.demo_notice && <div className="demo-inline">{String(feedback.demo_notice)}</div>}
       <p className="transcript">Transcript: {attempt.asr_transcript}</p>
       {!attempt.asr_transcript && <p className="transcript">Transcript hidden by the assigned research condition.</p>}
       <div className="metrics-grid">
         <Metric label="Duration" value={`${attempt.duration_seconds}s`} />
         <Metric label="Speech rate" value={`${attempt.speech_rate_wpm} wpm`} />
-        <Metric label="Word match" value={`${attempt.word_match_score}%`} />
+        <Metric label={feedback.simulated ? "Simulated practice score" : "Word match"} value={feedback.simulated ? String(feedback.overall_score ?? "N/A") : `${attempt.word_match_score}%`} />
         <Metric label="Long pauses" value={attempt.long_pause_count} />
       </div>
-      {groupId === "control" ? (
+      {attempt.no_speech_detected || attempt.feedback_type === "invalid_audio" ? (
+        <div className="feedback-box error-box"><strong>No Valid Speech</strong><p>{feedback.comment}</p></div>
+      ) : groupId === "control" ? (
         <div className="feedback-box"><strong>Comment</strong><p>{feedback.comment}</p></div>
       ) : feedback.feedback_type === "assessment_only" ? (
         <div className="feedback-box"><strong>Assessment Mode</strong><p>{feedback.comment}</p></div>

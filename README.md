@@ -50,15 +50,29 @@ Open `http://127.0.0.1:5173`.
 
 ## GitHub Pages Demo
 
-The repository includes a GitHub Actions workflow that builds the React frontend and deploys it to GitHub Pages. On GitHub Pages, the app runs in a browser-local demo mode because GitHub Pages cannot run the FastAPI backend. Demo tasks, attempts, dashboard summaries, and CSV exports are stored in the browser's localStorage.
+The repository includes a GitHub Actions workflow that builds the React frontend and deploys it to GitHub Pages. On GitHub Pages, the app runs in a browser-local demo mode because GitHub Pages cannot run the FastAPI backend.
+
+Important: GitHub Pages does not analyze audio. Recording and upload controls are accepted only for interface testing. Demo mode uses the optional transcript hint or browser-local mock data to simulate the research workflow. Any score shown there is labelled as a simulated practice score, not a real assessment result.
 
 For full research data collection with SQLite, audio files, and backend analysis, run the FastAPI backend locally or deploy it to a server and set `VITE_API_BASE` for the frontend build.
+
+To connect a deployed frontend to a real backend, build with:
+
+```powershell
+cd frontend
+$env:VITE_API_BASE="https://your-backend.example.com/api"
+npm run build
+```
+
+For local real testing, run the backend at `http://127.0.0.1:8000` and the frontend dev server. Vite proxies `/api` to FastAPI in local development.
 
 ## Mock ASR Mode
 
 Mock ASR is the default in `backend/app/config.py`.
 
 In the learner page, use the optional mock transcript hint to simulate what ASR recognized. If the hint is blank, mock mode returns an empty transcript and the score will be low. This avoids pretending that arbitrary audio was recognized correctly.
+
+If no transcript is detected, or if a WAV file is silent or too short, the backend returns `no_speech_detected=true`, `feedback_type=invalid_audio`, and the message: “No valid speech was detected. Please record your voice again.”
 
 ## Real ASR Mode
 

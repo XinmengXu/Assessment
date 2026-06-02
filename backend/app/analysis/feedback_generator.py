@@ -1,4 +1,12 @@
 def generate_feedback(group_id, score, target_text, transcript, alignment, features):
+    if features.get("no_speech_detected"):
+        return {
+            "overall_score": None,
+            "no_speech_detected": True,
+            "feedback_type": "invalid_audio",
+            "comment": "No valid speech was detected. Please record your voice again.",
+        }
+
     if group_id == "control":
         return {
             "overall_score": score,
