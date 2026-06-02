@@ -88,3 +88,41 @@ This prototype exports CSV files from `data/exports`.
 - `missing_penalty`, `substitution_penalty`, `speech_rate_penalty`, `pause_penalty`: transparent deductions.
 - `invalid_audio_penalty`: 100 when no useful score should be shown.
 - `score_note`: states that the score is a practice indicator, not a validated proficiency score.
+
+## Pronunciation Evidence
+
+- `evidence_level`: `asr_supported_cue`, `model_supported_diagnosis`, or `human_validated_diagnosis`.
+- `source_name`: ASR alignment, external model name, or reviewer source.
+- `score_level`: sentence, word, or phoneme.
+- `target_word`, `target_phoneme`: task target evidence fields.
+- `observed_phoneme`: null for ASR-supported cues; allowed only for model-supported or human-validated evidence.
+- `score`, `confidence`: source-provided or rule-derived numeric evidence.
+- `system_version_id`: system version active when evidence was created.
+
+## Diagnosis Records
+
+- `allowed_feedback_strength`: `cautious`, `direct`, or `validated`.
+- `feedback_text`: learner-safe diagnosis text. ASR-only records must use cautious wording.
+
+## External Assessment Scores
+
+- Imported from `/api/external-scores/import`.
+- Required CSV columns are documented in README.
+- Invalid rows are reported with row number and reason.
+
+## Human Validation Events
+
+- Feedback items use `validation_status`: `draft_generated`, `pending_review`, `approved`, `edited`, `rejected`, or `released_to_learner`.
+- `released_to_learner`: whether learner-facing retrieval may show the feedback.
+- `original_feedback_json`, `validated_feedback_json`: preserve original and reviewed feedback.
+
+## Teacher Orchestration Events
+
+- `teacher_id`, `class_id`, `participant_id_optional`: teacher action context.
+- `dashboard_signal_json`: signal that motivated action.
+- `recommended_action`, `teacher_action_taken`, `notes`: teacher workflow data.
+
+## Research Mode
+
+- `studies.locked`: when true, study-critical edits are rejected.
+- `attempts.system_version_id`: version active when an attempt was created.

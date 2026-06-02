@@ -113,6 +113,52 @@ Each attempt stores:
 - Complete alignment JSON with matched, missing, substituted, and inserted words.
 - `score_breakdown` with the components used to produce the practice score.
 
+## Evidence Levels And Diagnosis Limits
+
+The platform separates evidence levels:
+
+- `asr_supported_cue`: ASR alignment only. Feedback must use cautious wording such as "may not have been clearly recognized." It must not include `observed_phoneme`.
+- `model_supported_diagnosis`: imported external model evidence. The source name, score, confidence, and score level are stored.
+- `human_validated_diagnosis`: reviewer-supported evidence. Exact observed-phoneme claims require this or model-supported evidence.
+
+ASR alone never supports wording such as "you pronounced X as Y."
+
+## External Scores Import
+
+Researchers can download a CSV template from `GET /api/external-scores/template` and import scores with `POST /api/external-scores/import`.
+
+Required columns:
+
+`participant_code, task_code, attempt_number, source_name, score_level, target_word, target_phoneme, observed_phoneme_optional, score, confidence, issue_type_optional, notes_optional`
+
+Imported phoneme-level rows create `pronunciation_evidence`. Low phoneme-level scores can create `model_supported_diagnosis` records.
+
+## Human Validation Release
+
+For `human_validated_feedback`, draft feedback is hidden until review. Reviewers can approve, edit, reject, and release feedback:
+
+- `POST /api/feedback/{feedback_item_id}/approve`
+- `POST /api/feedback/{feedback_item_id}/edit`
+- `POST /api/feedback/{feedback_item_id}/reject`
+- `POST /api/feedback/{feedback_item_id}/release`
+- `GET /api/feedback/pending-review`
+
+## Research Mode Lock
+
+Use `POST /api/studies/{study_id}/lock` to lock a study. Locked studies reject task and condition edits with a clear error. Create a new system version with `POST /api/system-version/create` before changing study-critical settings.
+
+## Pilot Readiness Check
+
+Run:
+
+```powershell
+cd backend
+$env:PYTHONPATH="."
+python scripts/pilot_readiness_check.py
+```
+
+The script prints `PASS` or `FAIL` for health, valid attempt evidence, revision tracking, human validation release, teacher action logging, and full export.
+
 ## Export Data
 
 Use the dashboard buttons or these endpoints:

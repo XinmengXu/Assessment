@@ -30,6 +30,8 @@ export type Task = {
   target_text: string;
   issue_types?: string[];
   focus_words: string[];
+  focus_phonemes?: string[];
+  word_phoneme_map?: Record<string, string[]>;
   speaking_target: string;
   difficulty: string;
   model_audio_path: string;

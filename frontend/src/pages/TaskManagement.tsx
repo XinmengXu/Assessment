@@ -5,6 +5,8 @@ import { api, Task } from "../api/client";
 const blank = {
   target_text: "",
   focus_words: "",
+  focus_phonemes: "",
+  word_phoneme_map: "",
   issue_types: "",
   speaking_target: "",
   difficulty: "medium",
@@ -24,6 +26,8 @@ export function TaskManagement({ tasks, onTasks }: { tasks: Task[]; onTasks: (ta
     setForm({
       target_text: task.target_text,
       focus_words: task.focus_words.join(", "),
+      focus_phonemes: (task.focus_phonemes || []).join(", "),
+      word_phoneme_map: JSON.stringify(task.word_phoneme_map || {}),
       issue_types: (task.issue_types || []).join(", "),
       speaking_target: task.speaking_target,
       difficulty: task.difficulty,
@@ -39,6 +43,8 @@ export function TaskManagement({ tasks, onTasks }: { tasks: Task[]; onTasks: (ta
     const payload = {
       ...form,
       focus_words: form.focus_words.split(",").map((word) => word.trim()).filter(Boolean),
+      focus_phonemes: form.focus_phonemes.split(",").map((word) => word.trim()).filter(Boolean),
+      word_phoneme_map: safeJson(form.word_phoneme_map),
       issue_types: form.issue_types.split(",").map((word) => word.trim()).filter(Boolean),
     };
     const path = editingId ? `/tasks/${editingId}` : "/tasks";
@@ -57,6 +63,9 @@ export function TaskManagement({ tasks, onTasks }: { tasks: Task[]; onTasks: (ta
         <label>Target sentence<textarea value={form.target_text} onChange={(event) => setForm({ ...form, target_text: event.target.value })} /></label>
         <label>Task type<select value={form.task_type} onChange={(event) => setForm({ ...form, task_type: event.target.value })}><option>practice</option><option>pretest</option><option>posttest</option><option>delayed</option><option>calibration</option></select></label>
         <label>Focus words<input value={form.focus_words} onChange={(event) => setForm({ ...form, focus_words: event.target.value })} placeholder="comma separated" /></label>
+        <label>Focus phonemes<input value={form.focus_phonemes} onChange={(event) => setForm({ ...form, focus_phonemes: event.target.value })} placeholder="th, r, final_t" /></label>
+        <label>Word phoneme map<textarea value={form.word_phoneme_map} onChange={(event) => setForm({ ...form, word_phoneme_map: event.target.value })} placeholder='{"thought":["th"]}' /></label>
+        {form.task_type === "practice" && !form.focus_phonemes.trim() && <div className="feedback-box warning-box">This task cannot support sound-specific feedback until focus phonemes are added.</div>}
         <label>Issue types<input value={form.issue_types} onChange={(event) => setForm({ ...form, issue_types: event.target.value })} placeholder="theta_words, final_consonants" /></label>
         <label>Speaking target<input value={form.speaking_target} onChange={(event) => setForm({ ...form, speaking_target: event.target.value })} /></label>
         <label>Difficulty<select value={form.difficulty} onChange={(event) => setForm({ ...form, difficulty: event.target.value })}><option>easy</option><option>medium</option><option>hard</option></select></label>
@@ -72,11 +81,20 @@ export function TaskManagement({ tasks, onTasks }: { tasks: Task[]; onTasks: (ta
             <button key={task.id} onClick={() => edit(task)}>
               <strong>Task {task.id}</strong>
               <span>{task.target_text}</span>
-              <small>{task.task_type} · {task.speaking_target} · {task.difficulty}</small>
+              <small>{task.task_type} - {task.speaking_target} - {task.difficulty}</small>
+              {task.task_type === "practice" && !(task.focus_phonemes || []).length ? <small>This task cannot support sound-specific feedback until focus phonemes are added.</small> : null}
             </button>
           ))}
         </div>
       </div>
     </section>
   );
+}
+
+function safeJson(value: string) {
+  try {
+    return value.trim() ? JSON.parse(value) : {};
+  } catch {
+    return {};
+  }
 }

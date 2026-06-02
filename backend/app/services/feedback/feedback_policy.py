@@ -26,7 +26,7 @@ CONDITION_PRESETS = {
         "revision_allowed": True,
         "feedback_type": "score_only",
     },
-    "explainable": {
+    "explainable_diagnostic_feedback": {
         "show_transcript": True,
         "show_score": True,
         "show_diagnosis": True,
@@ -35,7 +35,7 @@ CONDITION_PRESETS = {
         "revision_allowed": True,
         "feedback_type": "explainable",
     },
-    "adaptive": {
+    "adaptive_diagnostic_feedback": {
         "show_transcript": True,
         "show_score": True,
         "show_diagnosis": True,
@@ -44,7 +44,7 @@ CONDITION_PRESETS = {
         "revision_allowed": True,
         "feedback_type": "adaptive",
     },
-    "human_validated": {
+    "human_validated_feedback": {
         "show_transcript": True,
         "show_score": True,
         "show_diagnosis": False,
@@ -53,14 +53,14 @@ CONDITION_PRESETS = {
         "revision_allowed": True,
         "feedback_type": "human_validated_pending",
     },
-    "llm_verbalized": {
+    "teacher_orchestrated_feedback": {
         "show_transcript": True,
         "show_score": True,
         "show_diagnosis": True,
         "show_explanation": True,
         "show_action_guidance": True,
         "revision_allowed": True,
-        "feedback_type": "llm_verbalized",
+        "feedback_type": "teacher_orchestrated",
     },
 }
 
@@ -72,12 +72,15 @@ def normalize_condition(value):
         "condition_a": "assessment_only",
         "condition_b": "transcript_only",
         "condition_c": "score_only",
-        "condition_d": "explainable",
-        "condition_e": "adaptive",
-        "condition_f": "human_validated",
-        "condition_g": "llm_verbalized",
+        "condition_d": "explainable_diagnostic_feedback",
+        "condition_e": "adaptive_diagnostic_feedback",
+        "condition_f": "human_validated_feedback",
+        "condition_g": "teacher_orchestrated_feedback",
+        "explainable": "explainable_diagnostic_feedback",
+        "adaptive": "adaptive_diagnostic_feedback",
+        "human_validated": "human_validated_feedback",
     }
-    return aliases.get(key, key if key in CONDITION_PRESETS else "explainable")
+    return aliases.get(key, key if key in CONDITION_PRESETS else "explainable_diagnostic_feedback")
 
 
 def condition_policy(condition):
@@ -117,8 +120,9 @@ def filter_feedback_for_condition(condition, transcript, score, structured_feedb
             result[key] = structured_feedback[key]
     if policy["feedback_type"] == "adaptive":
         result["metacognitive_prompt"] = result.get("metacognitive_prompt") or "Check whether this issue has appeared in your previous attempts, then set one revision goal."
-    if policy["feedback_type"] == "llm_verbalized":
-        result["llm_notice"] = "LLM verbalization is disabled unless configured on the backend; template wording is shown now."
+    if policy["feedback_type"] == "teacher_orchestrated":
+        result["teacher_review_recommended"] = True
+        result["metacognitive_prompt"] = result.get("metacognitive_prompt") or "Your teacher may use this attempt to plan follow-up practice."
     return result
 
 

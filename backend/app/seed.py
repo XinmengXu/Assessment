@@ -7,23 +7,23 @@ CONDITIONS = [
     ("assessment_only", "Condition A: Assessment-only", False, False, False, False, False, False, False, False, False),
     ("transcript_only", "Condition B: Transcript-only", True, False, False, False, False, False, False, False, True),
     ("score_only", "Condition C: Score-only", True, True, False, False, False, False, False, False, True),
-    ("explainable", "Condition D: Explainable rule-based feedback", True, True, True, True, True, False, False, False, True),
-    ("adaptive", "Condition E: Adaptive learner-model feedback", True, True, True, True, True, True, False, False, True),
-    ("human_validated", "Condition F: Human-validated feedback", True, True, False, False, False, False, True, False, True),
-    ("llm_verbalized", "Condition G: LLM verbalized feedback", True, True, True, True, True, False, False, True, True),
+    ("explainable_diagnostic_feedback", "Condition D: Explainable diagnostic feedback", True, True, True, True, True, False, False, False, True),
+    ("adaptive_diagnostic_feedback", "Condition E: Adaptive diagnostic feedback", True, True, True, True, True, True, False, False, True),
+    ("human_validated_feedback", "Condition F: Human-validated feedback", True, True, False, False, False, False, True, False, True),
+    ("teacher_orchestrated_feedback", "Condition G: Teacher-orchestrated feedback", True, True, True, True, True, False, False, False, True),
 ]
 
 PRACTICE_BASE = [
-    ("The thin path winds through three quiet fields.", ["theta_words", "rhythm"], ["thin", "through", "three"]),
-    ("Ray left a red ribbon near the library rail.", ["r_l_contrast"], ["ray", "red", "library"]),
-    ("Please keep the final sound in kept, asked, and missed.", ["final_consonants"], ["kept", "asked", "missed"]),
-    ("A small blue clock stood beside the glass plant.", ["consonant_clusters"], ["small", "clock", "glass"]),
-    ("She thought the weather would improve by Thursday.", ["theta_words"], ["thought", "weather", "Thursday"]),
-    ("Mark brought fresh fruit for breakfast before class.", ["consonant_clusters", "word_stress"], ["brought", "fresh", "breakfast"]),
-    ("The light rain fell slowly on the river road.", ["r_l_contrast", "rhythm"], ["light", "rain", "river"]),
-    ("We watched the brave child climb the steep steps.", ["final_consonants", "consonant_clusters"], ["watched", "climb", "steps"]),
-    ("Laura rarely arrives late for reading lessons.", ["r_l_contrast"], ["Laura", "rarely", "late"]),
-    ("The student explained the problem in a clear voice.", ["word_stress", "rhythm"], ["student", "explained", "clear"]),
+    ("The thin path winds through three quiet fields.", ["theta_words", "rhythm"], ["thin", "through", "three"], ["th"], {"thin": ["th"], "through": ["th"], "three": ["th"]}),
+    ("Ray left a red ribbon near the library rail.", ["r_l_contrast"], ["ray", "red", "library"], ["r", "l"], {"ray": ["r"], "red": ["r"], "library": ["l", "r"]}),
+    ("Please keep the final sound in kept, asked, and missed.", ["final_consonants"], ["kept", "asked", "missed"], ["final_t", "final_d"], {"kept": ["final_t"], "asked": ["final_t"], "missed": ["final_t"]}),
+    ("A small blue clock stood beside the glass plant.", ["consonant_clusters"], ["small", "clock", "glass"], ["clusters"], {"small": ["clusters"], "clock": ["clusters"], "glass": ["clusters"]}),
+    ("She thought the weather would improve by Thursday.", ["theta_words"], ["thought", "weather", "Thursday"], ["th"], {"thought": ["th"], "weather": ["th"], "Thursday": ["th"]}),
+    ("Mark brought fresh fruit for breakfast before class.", ["consonant_clusters", "word_stress"], ["brought", "fresh", "breakfast"], ["clusters"], {"brought": ["clusters"], "fresh": ["clusters"], "breakfast": ["clusters"]}),
+    ("The light rain fell slowly on the river road.", ["r_l_contrast", "rhythm"], ["light", "rain", "river"], ["r", "l"], {"light": ["l"], "rain": ["r"], "river": ["r"]}),
+    ("We watched the brave child climb the steep steps.", ["final_consonants", "consonant_clusters"], ["watched", "climb", "steps"], ["final_t", "clusters"], {"watched": ["final_t"], "climb": ["clusters"], "steps": ["clusters"]}),
+    ("Laura rarely arrives late for reading lessons.", ["r_l_contrast"], ["Laura", "rarely", "late"], ["r", "l"], {"Laura": ["l", "r"], "rarely": ["r", "l"], "late": ["l"]}),
+    ("The student explained the problem in a clear voice.", ["word_stress", "rhythm"], ["student", "explained", "clear"], ["stress"], {"student": ["stress"], "explained": ["stress"], "clear": ["clusters"]}),
 ]
 
 ASSESSMENT_SENTENCES = [
@@ -81,13 +81,15 @@ def seed_database(db):
     if db.query(Task).count() < 70:
         db.query(Task).delete()
         for idx in range(40):
-            text, issues, focus = PRACTICE_BASE[idx % len(PRACTICE_BASE)]
+            text, issues, focus, phonemes, word_map = PRACTICE_BASE[idx % len(PRACTICE_BASE)]
             db.add(Task(
                 task_code="P%03d" % (idx + 1),
                 task_type="practice",
                 target_text=text,
                 issue_types_json=json.dumps(issues),
                 focus_words=json.dumps(focus),
+                focus_phonemes_json=json.dumps(phonemes),
+                word_phoneme_map_json=json.dumps({k.lower(): v for k, v in word_map.items()}),
                 speaking_target="pronunciation clarity and comprehensibility",
                 difficulty=["easy", "medium", "hard"][idx % 3],
                 feedback_allowed=True,

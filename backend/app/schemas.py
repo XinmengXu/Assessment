@@ -24,6 +24,8 @@ class TaskBase(BaseModel):
     target_text: str
     issue_types: List[str] = []
     focus_words: List[str] = []
+    focus_phonemes: List[str] = []
+    word_phoneme_map: Dict[str, List[str]] = {}
     speaking_target: str = ""
     difficulty: str = "medium"
     model_audio_path: str = ""

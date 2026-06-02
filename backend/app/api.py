@@ -1,13 +1,14 @@
 import csv
 import json
 import shutil
+import zipfile
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from .analysis.asr import asr_service
@@ -23,12 +24,16 @@ from .database import (
     Condition,
     FeedbackItem,
     FeedbackView,
+    DiagnosisRecord,
+    ExternalAssessmentScore,
     IssueRecord,
     LearnerState,
     Participant,
+    PronunciationEvidence,
     RevisionEvent,
     Study,
     SystemVersion,
+    TeacherOrchestrationEvent,
     Task,
     get_db,
 )
@@ -63,6 +68,8 @@ def _task_to_schema(task):
         target_text=task.target_text,
         issue_types=_json(task.issue_types_json, "[]"),
         focus_words=_json(task.focus_words, "[]"),
+        focus_phonemes=_json(getattr(task, "focus_phonemes_json", "[]"), "[]"),
+        word_phoneme_map=_json(getattr(task, "word_phoneme_map_json", "{}"), "{}"),
         speaking_target=task.speaking_target or "",
         difficulty=task.difficulty or "medium",
         model_audio_path=task.model_audio_path or "",
@@ -148,6 +155,61 @@ def _detect_issue_types(task, alignment, features):
     return sorted(issues)
 
 
+def _ensure_unlocked_study(db, study_id):
+    study = db.query(Study).filter(Study.id == study_id).first()
+    if study and getattr(study, "locked", False):
+        raise HTTPException(status_code=400, detail="Study is locked for research mode. Create a new version to modify this setting.")
+
+
+def _focus_phoneme_for_word(task, word):
+    mapping = _json(getattr(task, "word_phoneme_map_json", "{}"), "{}")
+    phonemes = mapping.get((word or "").lower()) or mapping.get(word or "") or []
+    return phonemes[0] if phonemes else ""
+
+
+def _create_asr_supported_records(db, attempt, task, alignment, issue_records):
+    for issue in issue_records:
+        target_word = issue.get("target_word") or (alignment.get("missing_words") or [""])[0]
+        target_phoneme = _focus_phoneme_for_word(task, target_word)
+        text = "The focus word '%s' may not have been clearly recognized." % target_word if target_word else "A focus word may not have been clearly recognized."
+        if target_phoneme:
+            text += " This may relate to the target sound in this task."
+        db.add(PronunciationEvidence(
+            study_id=attempt.study_id,
+            condition_id=attempt.condition_id,
+            participant_id=attempt.participant_id,
+            task_id=attempt.task_id,
+            attempt_id=attempt.id,
+            source_name="asr_alignment",
+            evidence_level="asr_supported_cue",
+            score_level="word",
+            target_word=target_word,
+            target_phoneme=target_phoneme,
+            observed_phoneme=None,
+            score=attempt.word_match_score,
+            confidence=0.5 if target_word else 0.25,
+            issue_type=issue.get("issue_type", "generic_unclear_word"),
+            notes="ASR alignment cue only; no exact phoneme claim.",
+            system_version_id=getattr(attempt, "system_version_id", 1),
+        ))
+        db.add(DiagnosisRecord(
+            study_id=attempt.study_id,
+            condition_id=attempt.condition_id,
+            participant_id=attempt.participant_id,
+            task_id=attempt.task_id,
+            attempt_id=attempt.id,
+            evidence_level="asr_supported_cue",
+            evidence_source="asr_alignment",
+            confidence_level="medium" if target_word else "low",
+            target_word=target_word,
+            target_phoneme=target_phoneme,
+            observed_phoneme=None,
+            allowed_feedback_strength="cautious",
+            feedback_text=text,
+            system_version_id=getattr(attempt, "system_version_id", 1),
+        ))
+
+
 @router.get("/health")
 def health():
     return {
@@ -215,8 +277,36 @@ def list_studies(db: Session = Depends(get_db)):
     return db.query(Study).order_by(Study.id.asc()).all()
 
 
+@router.post("/studies/{study_id}/lock")
+def lock_study(study_id: int, db: Session = Depends(get_db)):
+    study = db.query(Study).filter(Study.id == study_id).first()
+    if not study:
+        raise HTTPException(status_code=404, detail="Study not found")
+    study.locked = True
+    db.commit()
+    return {"ok": True, "locked": True}
+
+
+@router.post("/system-version/create")
+def create_system_version(payload: dict = None, db: Session = Depends(get_db)):
+    payload = payload or {}
+    version = SystemVersion(
+        asr_adapter=payload.get("asr_adapter", ASR_MODE),
+        assessment_adapter=payload.get("assessment_adapter", "rule_based_asr_supported"),
+        scoring_version=payload.get("scoring_version", "practice_clarity_v1"),
+        feedback_policy_version=payload.get("feedback_policy_version", "policy_v1"),
+        template_bank_version=payload.get("template_bank_version", "template_bank_v1"),
+        app_version=payload.get("app_version", "0.2.0"),
+    )
+    db.add(version)
+    db.commit()
+    db.refresh(version)
+    return version
+
+
 @router.post("/studies/{study_id}/conditions")
 def create_condition(study_id: int, payload: dict, db: Session = Depends(get_db)):
+    _ensure_unlocked_study(db, study_id)
     condition = Condition(study_id=study_id, **payload)
     db.add(condition)
     db.commit()
@@ -226,7 +316,7 @@ def create_condition(study_id: int, payload: dict, db: Session = Depends(get_db)
 
 @router.get("/studies/{study_id}/conditions")
 def list_conditions(study_id: int, db: Session = Depends(get_db)):
-    return db.query(Condition).filter(Condition.study_id == study_id).order_by(Condition.id.asc()).all()
+    return db.query(Condition).filter(Condition.study_id == study_id, Condition.condition_code != "llm_verbalized").order_by(Condition.id.asc()).all()
 
 
 @router.post("/studies/{study_id}/assign")
@@ -258,12 +348,15 @@ def list_tasks(include_inactive: bool = False, db: Session = Depends(get_db)):
 
 @router.post("/tasks", response_model=TaskRead)
 def create_task(payload: TaskCreate, db: Session = Depends(get_db)):
+    _ensure_unlocked_study(db, 1)
     task = Task(
         task_code=payload.task_code,
         task_type=payload.task_type,
         target_text=payload.target_text,
         issue_types_json=json.dumps(payload.issue_types),
         focus_words=json.dumps(payload.focus_words),
+        focus_phonemes_json=json.dumps(payload.focus_phonemes),
+        word_phoneme_map_json=json.dumps(payload.word_phoneme_map),
         speaking_target=payload.speaking_target,
         difficulty=payload.difficulty,
         model_audio_path=payload.model_audio_path,
@@ -282,9 +375,14 @@ def update_task(task_id: int, payload: TaskCreate, db: Session = Depends(get_db)
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_unlocked_study(db, 1)
     for key, value in payload.model_dump().items():
         if key == "focus_words":
             task.focus_words = json.dumps(value)
+        elif key == "focus_phonemes":
+            task.focus_phonemes_json = json.dumps(value)
+        elif key == "word_phoneme_map":
+            task.word_phoneme_map_json = json.dumps(value)
         elif key == "issue_types":
             task.issue_types_json = json.dumps(value)
         else:
@@ -299,6 +397,7 @@ def deactivate_task(task_id: int, db: Session = Depends(get_db)):
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_unlocked_study(db, 1)
     task.active = False
     db.commit()
     return {"ok": True}
@@ -331,6 +430,7 @@ def analyze_attempt(
         raise HTTPException(status_code=404, detail="Task not found")
 
     previous = db.query(Attempt).filter(Attempt.participant_id == participant_id, Attempt.task_id == task_id).order_by(Attempt.attempt_number.desc()).first()
+    system_version = db.query(SystemVersion).order_by(SystemVersion.id.desc()).first()
     attempt_number = previous.attempt_number + 1 if previous else 1
     ext = Path(audio.filename or "audio.webm").suffix or ".webm"
     folder = AUDIO_DIR / participant_id / str(task_id)
@@ -382,6 +482,7 @@ def analyze_attempt(
         participant_id=participant_id,
         study_id=study_id,
         condition_id=condition.id if condition else 4,
+        system_version_id=system_version.id if system_version else 1,
         task_id=task_id,
         group_id=condition_key,
         attempt_number=attempt_number,
@@ -423,6 +524,10 @@ def analyze_attempt(
         metacognitive_prompt=str(feedback.get("metacognitive_prompt", "")),
         source="adaptive_policy" if feedback_type == "adaptive" else "template",
         approved_by_human=feedback_type != "human_validated_pending",
+        validation_status="pending_review" if feedback_type == "human_validated_pending" else "draft_generated",
+        released_to_learner=feedback_type != "human_validated_pending",
+        original_feedback_json=json.dumps(feedback),
+        validated_feedback_json=json.dumps({}),
     )
     db.add(item)
     db.commit()
@@ -432,7 +537,8 @@ def analyze_attempt(
 
     task_issues = _json(task.issue_types_json, "[]")
     focus_words = _json(task.focus_words, "[]")
-    for issue in issue_records_for_alignment(task_issues, focus_words, alignment, features):
+    alignment_issue_records = issue_records_for_alignment(task_issues, focus_words, alignment, features)
+    for issue in alignment_issue_records:
         db.add(IssueRecord(
             participant_id=participant_id,
             task_id=task_id,
@@ -442,6 +548,8 @@ def analyze_attempt(
             severity=0.5 if issue["severity"] == "moderate" else 1.0,
             evidence_json=json.dumps({"evidence": issue["evidence"], "alignment": alignment, "extra": issue["extra"]}),
         ))
+    if features.get("valid_audio", True):
+        _create_asr_supported_records(db, attempt, task, alignment, alignment_issue_records)
 
     if previous:
         prev_score = previous.assessment_score or _attempt_score(previous) or 0
@@ -490,9 +598,85 @@ def mark_feedback_viewed(feedback_item_id: int, payload: dict = None, db: Sessio
     return {"ok": True}
 
 
+@router.get("/feedback/pending-review")
+def pending_feedback_review(db: Session = Depends(get_db)):
+    return [clean_model(item) for item in db.query(FeedbackItem).filter(FeedbackItem.validation_status == "pending_review").all()]
+
+
 @router.get("/feedback/{attempt_id}")
 def feedback_for_attempt(attempt_id: int, db: Session = Depends(get_db)):
-    return db.query(FeedbackItem).filter(FeedbackItem.attempt_id == attempt_id).all()
+    items = db.query(FeedbackItem).filter(FeedbackItem.attempt_id == attempt_id).all()
+    return [item for item in items if item.released_to_learner or item.validation_status != "pending_review"]
+
+
+@router.post("/feedback/{feedback_item_id}/approve")
+def approve_feedback(feedback_item_id: int, payload: dict = None, db: Session = Depends(get_db)):
+    item = _feedback_item_or_404(db, feedback_item_id)
+    item.validation_status = "approved"
+    item.approved_by_human = True
+    db.commit()
+    return clean_model(item)
+
+
+@router.post("/feedback/{feedback_item_id}/edit")
+def edit_feedback(feedback_item_id: int, payload: dict, db: Session = Depends(get_db)):
+    item = _feedback_item_or_404(db, feedback_item_id)
+    item.validation_status = "edited"
+    item.approved_by_human = True
+    item.validated_feedback_json = json.dumps(payload or {})
+    item.diagnosis = payload.get("diagnosis", item.diagnosis)
+    item.explanation = payload.get("explanation", item.explanation)
+    item.action_guidance = payload.get("action_guidance", item.action_guidance)
+    item.revision_goal = payload.get("revision_goal", item.revision_goal)
+    attempt = db.query(Attempt).filter(Attempt.id == item.attempt_id).first()
+    if attempt and payload.get("observed_phoneme"):
+        db.add(DiagnosisRecord(
+            study_id=attempt.study_id,
+            condition_id=attempt.condition_id,
+            participant_id=attempt.participant_id,
+            task_id=attempt.task_id,
+            attempt_id=attempt.id,
+            evidence_level="human_validated_diagnosis",
+            evidence_source=payload.get("reviewer_id", "human_reviewer"),
+            confidence_level="high",
+            target_word=payload.get("target_word", item.issue_type),
+            target_phoneme=payload.get("target_phoneme", ""),
+            observed_phoneme=payload.get("observed_phoneme"),
+            allowed_feedback_strength="validated",
+            feedback_text=payload.get("diagnosis", item.diagnosis),
+            system_version_id=getattr(attempt, "system_version_id", 1),
+        ))
+    db.commit()
+    return clean_model(item)
+
+
+@router.post("/feedback/{feedback_item_id}/reject")
+def reject_feedback(feedback_item_id: int, payload: dict = None, db: Session = Depends(get_db)):
+    item = _feedback_item_or_404(db, feedback_item_id)
+    item.validation_status = "rejected"
+    item.released_to_learner = False
+    item.validated_feedback_json = json.dumps(payload or {})
+    db.commit()
+    return clean_model(item)
+
+
+@router.post("/feedback/{feedback_item_id}/release")
+def release_feedback(feedback_item_id: int, db: Session = Depends(get_db)):
+    item = _feedback_item_or_404(db, feedback_item_id)
+    if item.validation_status == "rejected":
+        raise HTTPException(status_code=400, detail="Rejected feedback cannot be released.")
+    item.validation_status = "released_to_learner"
+    item.released_to_learner = True
+    item.approved_by_human = True
+    db.commit()
+    return clean_model(item)
+
+
+def _feedback_item_or_404(db, feedback_item_id):
+    item = db.query(FeedbackItem).filter(FeedbackItem.id == feedback_item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Feedback item not found")
+    return item
 
 
 @router.get("/learner-states/{participant_id}")
@@ -623,6 +807,30 @@ def issue_summary(db: Session = Depends(get_db)):
     return [{"issue_type": k, "count": v} for k, v in counts.most_common()]
 
 
+@router.post("/teacher/orchestration-event")
+def teacher_orchestration_event(payload: dict, db: Session = Depends(get_db)):
+    event = TeacherOrchestrationEvent(
+        study_id=payload.get("study_id", 1),
+        condition_id=payload.get("condition_id", 0),
+        teacher_id=payload.get("teacher_id", ""),
+        class_id=payload.get("class_id", ""),
+        participant_id_optional=payload.get("participant_id_optional", ""),
+        task_id=payload.get("task_id", 0),
+        attempt_id=payload.get("attempt_id", 0),
+        issue_type=payload.get("issue_type", ""),
+        target_phoneme_optional=payload.get("target_phoneme_optional", ""),
+        dashboard_signal_json=json.dumps(payload.get("dashboard_signal_json", {})),
+        recommended_action=payload.get("recommended_action", ""),
+        teacher_action_taken=payload.get("teacher_action_taken", ""),
+        notes=payload.get("notes", ""),
+        system_version_id=payload.get("system_version_id", 1),
+    )
+    db.add(event)
+    db.commit()
+    db.refresh(event)
+    return clean_model(event)
+
+
 def _write_csv(db, report_type, rows):
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     path = EXPORT_DIR / ("%s_%s.csv" % (report_type, datetime.utcnow().strftime("%Y%m%d_%H%M%S")))
@@ -643,6 +851,78 @@ def export_participants(db: Session = Depends(get_db)):
 @router.get("/exports/attempts")
 def export_attempts(db: Session = Depends(get_db)):
     return _write_csv(db, "attempts", [_attempt_to_dict(db, a) for a in db.query(Attempt).all()])
+
+
+@router.get("/exports/studies")
+def export_studies(db: Session = Depends(get_db)):
+    return _write_csv(db, "studies", [clean_model(s) for s in db.query(Study).all()])
+
+
+@router.get("/exports/conditions")
+def export_conditions(db: Session = Depends(get_db)):
+    return _write_csv(db, "conditions", [clean_model(c) for c in db.query(Condition).all()])
+
+
+@router.get("/exports/audio-evidence")
+def export_audio_evidence(db: Session = Depends(get_db)):
+    rows = [{
+        "study_id": a.study_id,
+        "condition_id": a.condition_id,
+        "participant_id": a.participant_id,
+        "task_id": a.task_id,
+        "attempt_id": a.id,
+        "timestamp": a.created_at.isoformat(),
+        "system_version_id": getattr(a, "system_version_id", 1),
+        "audio_path": a.audio_path,
+        "duration_seconds": a.duration_seconds,
+        "speech_rate_wpm": a.speech_rate_wpm,
+        "long_pause_count": a.long_pause_count,
+        "valid_audio": getattr(a, "valid_audio", True),
+    } for a in db.query(Attempt).all()]
+    return _write_csv(db, "audio_evidence", rows)
+
+
+@router.get("/exports/asr-evidence")
+def export_asr_evidence(db: Session = Depends(get_db)):
+    rows = [{
+        "study_id": a.study_id,
+        "condition_id": a.condition_id,
+        "participant_id": a.participant_id,
+        "task_id": a.task_id,
+        "attempt_id": a.id,
+        "timestamp": a.created_at.isoformat(),
+        "system_version_id": getattr(a, "system_version_id", 1),
+        "asr_adapter": a.asr_adapter,
+        "asr_transcript": a.asr_transcript,
+        "asr_sanity_json": a.asr_sanity_json,
+        "alignment_json": a.alignment_json,
+    } for a in db.query(Attempt).all()]
+    return _write_csv(db, "asr_evidence", rows)
+
+
+@router.get("/exports/pronunciation-evidence")
+def export_pronunciation_evidence(db: Session = Depends(get_db)):
+    return _write_csv(db, "pronunciation_evidence", [clean_model(row) for row in db.query(PronunciationEvidence).all()])
+
+
+@router.get("/exports/diagnosis-records")
+def export_diagnosis_records(db: Session = Depends(get_db)):
+    return _write_csv(db, "diagnosis_records", [clean_model(row) for row in db.query(DiagnosisRecord).all()])
+
+
+@router.get("/exports/external-assessment-scores")
+def export_external_assessment_scores(db: Session = Depends(get_db)):
+    return _write_csv(db, "external_assessment_scores", [clean_model(row) for row in db.query(ExternalAssessmentScore).all()])
+
+
+@router.get("/exports/teacher-orchestration-events")
+def export_teacher_orchestration_events(db: Session = Depends(get_db)):
+    return _write_csv(db, "teacher_orchestration_events", [clean_model(row) for row in db.query(TeacherOrchestrationEvent).all()])
+
+
+@router.get("/exports/system-versions")
+def export_system_versions(db: Session = Depends(get_db)):
+    return _write_csv(db, "system_versions", [clean_model(row) for row in db.query(SystemVersion).all()])
 
 
 @router.get("/exports/feedback")
@@ -673,7 +953,29 @@ def export_study_design(db: Session = Depends(get_db)):
 
 @router.get("/exports/full")
 def export_full(db: Session = Depends(get_db)):
-    return export_attempts(db)
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    path = EXPORT_DIR / ("full_research_export_%s.zip" % datetime.utcnow().strftime("%Y%m%d_%H%M%S"))
+    export_sets = {
+        "participants.csv": [clean_model(p) for p in db.query(Participant).all()],
+        "studies.csv": [clean_model(s) for s in db.query(Study).all()],
+        "conditions.csv": [clean_model(c) for c in db.query(Condition).all()],
+        "tasks.csv": [clean_model(t) for t in db.query(Task).all()],
+        "attempts.csv": [_attempt_to_dict(db, a) for a in db.query(Attempt).all()],
+        "pronunciation_evidence.csv": [clean_model(row) for row in db.query(PronunciationEvidence).all()],
+        "diagnosis_records.csv": [clean_model(row) for row in db.query(DiagnosisRecord).all()],
+        "feedback_items.csv": [clean_model(f) for f in db.query(FeedbackItem).all()],
+        "feedback_views.csv": [clean_model(v) for v in db.query(FeedbackView).all()],
+        "revision_events.csv": [clean_model(r) for r in db.query(RevisionEvent).all()],
+        "learner_states.csv": [clean_model(s) for s in db.query(LearnerState).all()],
+        "annotations.csv": [clean_model(a) for a in db.query(Annotation).all()],
+        "teacher_orchestration_events.csv": [clean_model(row) for row in db.query(TeacherOrchestrationEvent).all()],
+        "external_assessment_scores.csv": [clean_model(row) for row in db.query(ExternalAssessmentScore).all()],
+        "system_versions.csv": [clean_model(row) for row in db.query(SystemVersion).all()],
+    }
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for filename, rows in export_sets.items():
+            archive.writestr(filename, _csv_text(rows))
+    return FileResponse(path, filename=path.name, media_type="application/zip")
 
 
 @router.get("/exports/participant/{participant_id}")
@@ -691,3 +993,151 @@ def clean_model(model):
     data = dict(model.__dict__)
     data.pop("_sa_instance_state", None)
     return data
+
+
+def _csv_text(rows):
+    if not rows:
+        rows = [{"empty": "true"}]
+    from io import StringIO
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=list(rows[0].keys()))
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue()
+
+
+EXTERNAL_SCORE_COLUMNS = [
+    "participant_code",
+    "task_code",
+    "attempt_number",
+    "source_name",
+    "score_level",
+    "target_word",
+    "target_phoneme",
+    "observed_phoneme_optional",
+    "score",
+    "confidence",
+    "issue_type_optional",
+    "notes_optional",
+]
+
+
+@router.get("/external-scores/template")
+def external_scores_template():
+    sample = ",".join(EXTERNAL_SCORE_COLUMNS) + "\n"
+    return Response(sample, media_type="text/csv", headers={"Content-Disposition": "attachment; filename=external_scores_template.csv"})
+
+
+@router.post("/external-scores/import")
+def import_external_scores(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    content = file.file.read().decode("utf-8-sig")
+    reader = csv.DictReader(content.splitlines())
+    errors = []
+    imported = 0
+    for row_number, row in enumerate(reader, start=2):
+        error = _validate_external_score_row(row)
+        participant = db.query(Participant).filter(Participant.participant_code == row.get("participant_code")).first()
+        task = db.query(Task).filter(Task.task_code == row.get("task_code")).first()
+        attempt = None
+        if participant and task:
+            attempt = db.query(Attempt).filter(
+                Attempt.participant_id == participant.participant_id,
+                Attempt.task_id == task.id,
+                Attempt.attempt_number == int(row.get("attempt_number") or 1),
+            ).first()
+        if not participant:
+            error = error or "participant_code not found"
+        if not task:
+            error = error or "task_code not found"
+        if not attempt:
+            error = error or "attempt not found"
+        if error:
+            errors.append({"row": row_number, "reason": error})
+            continue
+        score = float(row.get("score") or 0)
+        confidence = float(row.get("confidence") or 0)
+        score_record = ExternalAssessmentScore(
+            study_id=attempt.study_id,
+            condition_id=attempt.condition_id,
+            participant_id=attempt.participant_id,
+            task_id=attempt.task_id,
+            attempt_id=attempt.id,
+            participant_code=row.get("participant_code", ""),
+            task_code=row.get("task_code", ""),
+            attempt_number=attempt.attempt_number,
+            source_name=row.get("source_name", ""),
+            score_level=row.get("score_level", ""),
+            target_word=row.get("target_word", ""),
+            target_phoneme=row.get("target_phoneme", ""),
+            observed_phoneme_optional=row.get("observed_phoneme_optional", ""),
+            score=score,
+            confidence=confidence,
+            issue_type_optional=row.get("issue_type_optional", ""),
+            notes_optional=row.get("notes_optional", ""),
+            system_version_id=getattr(attempt, "system_version_id", 1),
+        )
+        db.add(score_record)
+        evidence_level = "model_supported_diagnosis" if row.get("score_level") == "phoneme" else "asr_supported_cue"
+        db.add(PronunciationEvidence(
+            study_id=attempt.study_id,
+            condition_id=attempt.condition_id,
+            participant_id=attempt.participant_id,
+            task_id=attempt.task_id,
+            attempt_id=attempt.id,
+            source_name=row.get("source_name", ""),
+            evidence_level=evidence_level,
+            score_level=row.get("score_level", ""),
+            target_word=row.get("target_word", ""),
+            target_phoneme=row.get("target_phoneme", ""),
+            observed_phoneme=row.get("observed_phoneme_optional") or None,
+            score=score,
+            confidence=confidence,
+            issue_type=row.get("issue_type_optional", ""),
+            notes=row.get("notes_optional", ""),
+            system_version_id=getattr(attempt, "system_version_id", 1),
+        ))
+        if row.get("score_level") == "phoneme" and score < 70:
+            db.add(DiagnosisRecord(
+                study_id=attempt.study_id,
+                condition_id=attempt.condition_id,
+                participant_id=attempt.participant_id,
+                task_id=attempt.task_id,
+                attempt_id=attempt.id,
+                evidence_level="model_supported_diagnosis",
+                evidence_source=row.get("source_name", ""),
+                confidence_level="medium" if confidence < 0.8 else "high",
+                target_word=row.get("target_word", ""),
+                target_phoneme=row.get("target_phoneme", ""),
+                observed_phoneme=row.get("observed_phoneme_optional") or None,
+                allowed_feedback_strength="direct",
+                feedback_text="The model indicates that the %s sound in this word may need targeted practice." % row.get("target_phoneme", "target"),
+                system_version_id=getattr(attempt, "system_version_id", 1),
+            ))
+        imported += 1
+    db.commit()
+    return {"imported": imported, "errors": errors}
+
+
+@router.get("/external-scores/{attempt_id}")
+def external_scores_for_attempt(attempt_id: int, db: Session = Depends(get_db)):
+    return [clean_model(row) for row in db.query(ExternalAssessmentScore).filter(ExternalAssessmentScore.attempt_id == attempt_id).all()]
+
+
+def _validate_external_score_row(row):
+    missing = [column for column in EXTERNAL_SCORE_COLUMNS if column not in row]
+    if missing:
+        return "missing columns: %s" % ", ".join(missing)
+    level = (row.get("score_level") or "").strip()
+    if level not in ["sentence", "word", "phoneme"]:
+        return "score_level must be sentence, word, or phoneme"
+    if level in ["word", "phoneme"] and not row.get("target_word"):
+        return "word-level and phoneme-level rows require target_word"
+    if level == "phoneme" and not row.get("target_phoneme"):
+        return "phoneme-level rows require target_phoneme"
+    try:
+        float(row.get("score") or "")
+        float(row.get("confidence") or "")
+        int(row.get("attempt_number") or "")
+    except ValueError:
+        return "attempt_number, score, and confidence must be numeric"
+    return ""

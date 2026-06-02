@@ -2,8 +2,11 @@ import { useEffect, useState } from "react";
 import { api, Attempt, exportUrl } from "../api/client";
 import { Download, Save } from "lucide-react";
 
+type PendingFeedback = { id: number; attempt_id: number; participant_id: string; diagnosis: string; validation_status: string; released_to_learner: boolean };
+
 export function AnnotationReview() {
   const [pending, setPending] = useState<Attempt[]>([]);
+  const [pendingFeedback, setPendingFeedback] = useState<PendingFeedback[]>([]);
   const [selected, setSelected] = useState<Attempt | null>(null);
   const [form, setForm] = useState({
     annotator_id: "annotator01",
@@ -24,6 +27,7 @@ export function AnnotationReview() {
       setPending(items);
       setSelected((current) => current || items[0] || null);
     });
+    api<PendingFeedback[]>("/feedback/pending-review").then(setPendingFeedback);
   }
 
   useEffect(load, []);
@@ -42,6 +46,17 @@ export function AnnotationReview() {
       }),
     });
     setSelected(null);
+    load();
+  }
+
+  async function approveRelease(item: PendingFeedback) {
+    await api(`/feedback/${item.id}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    await api(`/feedback/${item.id}/release`, { method: "POST" });
+    load();
+  }
+
+  async function reject(item: PendingFeedback) {
+    await api(`/feedback/${item.id}/reject`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "Rejected in annotation review." }) });
     load();
   }
 
@@ -84,6 +99,19 @@ export function AnnotationReview() {
         ) : (
           <p className="muted">No pending attempts yet.</p>
         )}
+      </div>
+      <div className="panel">
+        <h2>Pending Feedback Release</h2>
+        <div className="task-list">
+          {pendingFeedback.map((item) => (
+            <button key={item.id}>
+              <strong>Feedback {item.id} - Attempt {item.attempt_id}</strong>
+              <span>{item.diagnosis || "Draft feedback pending review"}</span>
+              <small>{item.validation_status} - released {String(item.released_to_learner)}</small>
+              <span className="actions"><button className="primary" onClick={() => approveRelease(item)}>Approve + release</button><button className="danger" onClick={() => reject(item)}>Reject</button></span>
+            </button>
+          ))}
+        </div>
       </div>
     </section>
   );

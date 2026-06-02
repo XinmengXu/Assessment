@@ -20,7 +20,7 @@ def generate_feedback(group_id, score, target_text, transcript, alignment, featu
     elif alignment["substitutions"]:
         sub = alignment["substitutions"][0]
         issue_word = sub["expected"]
-        diagnosis = "The word '%s' may have sounded like '%s'." % (sub["expected"], sub.get("heard") or "another word")
+        diagnosis = "The focus word '%s' may not have been clearly recognized." % sub["expected"]
     elif features["speech_rate_wpm"] < 70:
         diagnosis = "The reading may be slow enough to reduce fluency."
     elif features["speech_rate_wpm"] > 180:
@@ -31,7 +31,7 @@ def generate_feedback(group_id, score, target_text, transcript, alignment, featu
         diagnosis = "Most target words were recognized clearly in this attempt."
 
     if issue_word:
-        explanation = "This word carries sentence meaning. If it is unclear, a listener may misunderstand the message."
+        explanation = "This is an ASR-supported cue, not an exact pronunciation diagnosis. This word carries sentence meaning, so unclear recognition may affect understanding."
         action = "Practise '%s' three times, then say the full sentence again with steady rhythm." % issue_word
         revision = "After re-recording, compare whether '%s' is recognized more clearly." % issue_word
     elif "slow" in diagnosis:
