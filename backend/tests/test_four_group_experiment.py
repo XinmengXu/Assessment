@@ -1,5 +1,6 @@
 import io
 import wave
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -117,7 +118,8 @@ def test_users_export_includes_condition_group():
 
 
 def test_teacher_ui_is_student_first_static_check():
-    text = open("frontend/src/main.tsx", encoding="utf-8").read()
+    repo_root = Path(__file__).resolve().parents[2]
+    text = (repo_root / "frontend" / "src" / "main.tsx").read_text(encoding="utf-8")
     assert "Student List" in text
     assert "Student Detail" in text
     assert "Review one selected student attempt at a time" in text
