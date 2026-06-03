@@ -26,6 +26,8 @@ type Health = {
   status: string;
   mock_mode: boolean;
   asr_adapter: string;
+  pronunciation_provider?: string;
+  provider_research_usable?: boolean;
   whisper_model_size?: string;
   whisper_device?: string;
   app_version?: string;
@@ -75,6 +77,7 @@ export function Dashboard() {
             <div className={health.mock_mode ? "feedback-box warning-box" : "feedback-box"}>
               <strong>Backend Status</strong>
               <p>{health.status} - ASR: {health.asr_adapter}{health.whisper_model_size ? ` (${health.whisper_model_size}, ${health.whisper_device})` : ""}</p>
+              <p>Pronunciation provider: {health.pronunciation_provider || "unknown"}{health.provider_research_usable ? " (research usable)" : " (not research usable)"}</p>
             </div>
           )}
           <div className="stats-grid">

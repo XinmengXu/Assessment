@@ -1,8 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import os
 
 from .api import router
+from .config import FRONTEND_ORIGINS
 from .database import SessionLocal, init_db
 from .seed import seed_database
 
@@ -11,7 +11,7 @@ app = FastAPI(title="Explainable Speech-AI Feedback App")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,https://xinmengxu.github.io").split(",")],
+    allow_origins=[origin.strip() for origin in FRONTEND_ORIGINS.split(",") if origin.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

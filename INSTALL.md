@@ -43,6 +43,40 @@ pip install faster-whisper
 
 Then set `ASR_MODE = "faster_whisper"` in `backend/app/config.py`.
 
+Prefer environment variables for deployment:
+
+```powershell
+$env:ASR_MODE="faster_whisper"
+$env:WHISPER_MODEL_SIZE="tiny"
+$env:WHISPER_DEVICE="cpu"
+$env:WHISPER_COMPUTE_TYPE="int8"
+```
+
+## Optional Pronunciation Assessment Provider
+
+For UI testing only:
+
+```powershell
+$env:PRONUNCIATION_PROVIDER="mock"
+```
+
+For formal research collection with Azure:
+
+```powershell
+$env:RESEARCH_MODE="true"
+$env:PRONUNCIATION_PROVIDER="azure_pronunciation"
+$env:AZURE_SPEECH_KEY="..."
+$env:AZURE_SPEECH_REGION="..."
+```
+
+For externally scored data:
+
+```powershell
+$env:PRONUNCIATION_PROVIDER="external_import"
+```
+
+Run `GET /api/pilot-readiness` before collection.
+
 ## Optional LLM Verbalizer
 
 LLM verbalization is disabled by default. Copy `.env.example` to `.env`, set `LLM_VERBALIZER_ENABLED=true`, and provide an API key only if you intentionally add a backend verbalizer adapter. The LLM must only rewrite structured diagnosis; it should not create the diagnosis.

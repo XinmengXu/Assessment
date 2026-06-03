@@ -2,14 +2,13 @@ from datetime import datetime
 from sqlalchemy import Boolean, create_engine, Column, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
-from .config import DB_PATH, ensure_data_dirs
+from .config import DATABASE_URL, DB_PATH, ensure_data_dirs
 
 
 ensure_data_dirs()
-engine = create_engine(
-    "sqlite:///" + str(DB_PATH),
-    connect_args={"check_same_thread": False},
-)
+_database_url = DATABASE_URL or ("sqlite:///" + str(DB_PATH))
+_engine_kwargs = {"connect_args": {"check_same_thread": False}} if _database_url.startswith("sqlite") else {}
+engine = create_engine(_database_url, **_engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -28,6 +27,8 @@ class Participant(Base):
     proficiency_level = Column(String, default="")
     l1_background_optional = Column(String, default="")
     session_id = Column(String, default="")
+    withdrawn = Column(Boolean, default=False)
+    withdrawal_reason_optional = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -39,6 +40,49 @@ class Study(Base):
     description = Column(Text, default="")
     active = Column(Boolean, default=True)
     locked = Column(Boolean, default=False)
+    lock_reason = Column(Text, default="")
+    locked_at = Column(DateTime, nullable=True)
+    unlocked_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class StudyVersion(Base):
+    __tablename__ = "study_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    study_id = Column(Integer, ForeignKey("studies.id"), index=True)
+    version_code = Column(String, default="v1")
+    description = Column(Text, default="")
+    task_manifest_json = Column(Text, default="{}")
+    condition_manifest_json = Column(Text, default="{}")
+    provider_name = Column(String, default="")
+    feedback_policy_version = Column(String, default="policy_v1")
+    locked_snapshot_json = Column(Text, default="{}")
+    created_by = Column(String, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ResearchSession(Base):
+    __tablename__ = "research_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    study_id = Column(Integer, default=1, index=True)
+    session_code = Column(String, default="", index=True)
+    session_type = Column(String, default="practice_intervention")
+    display_order = Column(Integer, default=0)
+    task_set_id = Column(Integer, default=0)
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class TaskSet(Base):
+    __tablename__ = "task_sets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    study_id = Column(Integer, default=1, index=True)
+    task_set_code = Column(String, default="", index=True)
+    task_ids_json = Column(Text, default="[]")
+    description = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -107,6 +151,8 @@ class Task(Base):
     id = Column(Integer, primary_key=True, index=True)
     task_code = Column(String, default="")
     task_type = Column(String, default="practice")
+    session_type = Column(String, default="practice_intervention")
+    task_set_id = Column(Integer, default=0, index=True)
     target_text = Column(Text, nullable=False)
     issue_types_json = Column(Text, default="[]")
     focus_words = Column(Text, default="[]")
@@ -134,16 +180,24 @@ class Attempt(Base):
     id = Column(Integer, primary_key=True, index=True)
     participant_id = Column(String, ForeignKey("participants.participant_id"), index=True)
     study_id = Column(Integer, default=1)
+    study_version_id = Column(Integer, default=0, index=True)
     condition_id = Column(Integer, default=4)
     system_version_id = Column(Integer, default=1)
     task_id = Column(Integer, ForeignKey("tasks.id"), index=True)
+    task_code = Column(String, default="")
+    session_id = Column(String, default="")
+    session_type = Column(String, default="")
     group_id = Column(String, index=True)
     attempt_number = Column(Integer, nullable=False)
+    recording_start_time = Column(DateTime, nullable=True)
+    recording_end_time = Column(DateTime, nullable=True)
+    submitted_at = Column(DateTime, nullable=True)
     audio_path = Column(String, nullable=False)
     asr_adapter = Column(String, default="mock_asr")
     asr_transcript = Column(Text, default="")
     transcript_confidence_optional = Column(Float, default=0.0)
     duration_seconds = Column(Float, default=0.0)
+    audio_duration = Column(Float, default=0.0)
     speech_rate_wpm = Column(Float, default=0.0)
     word_match_score = Column(Float, default=0.0)
     assessment_score = Column(Float, default=0.0)
@@ -154,12 +208,27 @@ class Attempt(Base):
     asr_sanity_json = Column(Text, default="{}")
     score_breakdown_json = Column(Text, default="{}")
     valid_audio = Column(Boolean, default=True)
+    invalid_audio_reason = Column(Text, default="")
+    assessment_provider = Column(String, default="")
+    assessment_status = Column(String, default="not_run")
+    overall_score = Column(Float, nullable=True)
+    accuracy_score = Column(Float, nullable=True)
+    fluency_score = Column(Float, nullable=True)
+    completeness_score = Column(Float, nullable=True)
+    prosody_score = Column(Float, nullable=True)
     long_pause_count = Column(Integer, default=0)
     feedback_generated = Column(Boolean, default=True)
     feedback_shown = Column(Boolean, default=True)
+    feedback_displayed_to_learner = Column(Boolean, default=True)
+    feedback_viewed = Column(Boolean, default=False)
+    feedback_view_time = Column(Float, default=0.0)
+    next_attempt_id = Column(Integer, default=0)
+    score_delta_from_previous_attempt = Column(Float, default=0.0)
+    target_issue_resolved = Column(Boolean, default=False)
     feedback_type = Column(String, default="score_only")
     feedback_policy_id = Column(String, default="")
     feedback_json = Column(Text, default="{}")
+    raw_result_json = Column(Text, default="{}")
     created_at = Column(DateTime, default=datetime.utcnow)
 
     task = relationship("Task")
@@ -175,6 +244,83 @@ class FeedbackView(Base):
     feedback_item_id = Column(Integer, default=0)
     view_duration_ms_optional = Column(Integer, default=0)
     viewed_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AudioFile(Base):
+    __tablename__ = "audio_files"
+
+    id = Column(Integer, primary_key=True)
+    study_id = Column(Integer, default=1, index=True)
+    participant_id = Column(String, index=True)
+    task_id = Column(Integer, index=True)
+    attempt_id = Column(Integer, index=True)
+    storage_path = Column(Text, default="")
+    original_filename = Column(String, default="")
+    content_type = Column(String, default="")
+    file_size_bytes = Column(Integer, default=0)
+    duration_seconds = Column(Float, default=0.0)
+    sampling_rate = Column(Integer, default=0)
+    valid_audio = Column(Boolean, default=True)
+    invalid_reasons_json = Column(Text, default="[]")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PronunciationAssessmentResult(Base):
+    __tablename__ = "pronunciation_assessment_results"
+
+    id = Column(Integer, primary_key=True)
+    study_id = Column(Integer, default=1, index=True)
+    study_version_id = Column(Integer, default=0, index=True)
+    participant_id = Column(String, index=True)
+    task_id = Column(Integer, index=True)
+    attempt_id = Column(Integer, index=True)
+    provider_name = Column(String, default="")
+    provider_version = Column(String, default="")
+    request_id = Column(String, default="")
+    reference_text = Column(Text, default="")
+    recognized_text = Column(Text, default="")
+    overall_score = Column(Float, nullable=True)
+    accuracy_score = Column(Float, nullable=True)
+    fluency_score = Column(Float, nullable=True)
+    completeness_score = Column(Float, nullable=True)
+    prosody_score = Column(Float, nullable=True)
+    pronunciation_score = Column(Float, nullable=True)
+    confidence = Column(Float, default=0.0)
+    evidence_level = Column(String, default="practice_indicator")
+    status = Column(String, default="ok")
+    error_message = Column(Text, default="")
+    raw_response_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WordLevelAssessment(Base):
+    __tablename__ = "word_level_assessments"
+
+    id = Column(Integer, primary_key=True)
+    result_id = Column(Integer, index=True, default=0)
+    attempt_id = Column(Integer, index=True, default=0)
+    word = Column(String, default="")
+    reference_word = Column(String, default="")
+    accuracy_score = Column(Float, nullable=True)
+    error_type = Column(String, default="")
+    confidence = Column(Float, default=0.0)
+    raw_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PhonemeLevelAssessment(Base):
+    __tablename__ = "phoneme_level_assessments"
+
+    id = Column(Integer, primary_key=True)
+    result_id = Column(Integer, index=True, default=0)
+    attempt_id = Column(Integer, index=True, default=0)
+    word = Column(String, default="")
+    phoneme = Column(String, default="")
+    accuracy_score = Column(Float, nullable=True)
+    error_type = Column(String, default="")
+    confidence = Column(Float, default=0.0)
+    raw_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class FeedbackItem(Base):
@@ -197,6 +343,34 @@ class FeedbackItem(Base):
     original_feedback_json = Column(Text, default="{}")
     validated_feedback_json = Column(Text, default="{}")
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FeedbackEvent(Base):
+    __tablename__ = "feedback_events"
+
+    id = Column(Integer, primary_key=True)
+    participant_id = Column(String, index=True)
+    study_id = Column(Integer, default=1, index=True)
+    task_id = Column(Integer, index=True)
+    attempt_id = Column(Integer, index=True)
+    feedback_item_id = Column(Integer, default=0)
+    event_type = Column(String, index=True)
+    event_value = Column(Text, default="")
+    duration_ms_optional = Column(Integer, default=0)
+    metadata_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FeedbackUptakeState(Base):
+    __tablename__ = "feedback_uptake_states"
+
+    id = Column(Integer, primary_key=True)
+    participant_id = Column(String, index=True)
+    task_id = Column(Integer, index=True)
+    attempt_id = Column(Integer, index=True)
+    uptake_state = Column(String, default="F0")
+    rules_json = Column(Text, default="{}")
+    computed_at = Column(DateTime, default=datetime.utcnow)
 
 
 class PronunciationEvidence(Base):
@@ -413,6 +587,81 @@ class PeerFeedback(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class HumanRating(Base):
+    __tablename__ = "human_ratings"
+
+    id = Column(Integer, primary_key=True)
+    attempt_id = Column(Integer, index=True)
+    anonymized_participant_id = Column(String, index=True)
+    task_id = Column(Integer, index=True)
+    session_type = Column(String, default="")
+    rater_id = Column(String, index=True)
+    rubric_version = Column(String, default="rubric_v1")
+    pronunciation = Column(Float, nullable=True)
+    fluency = Column(Float, nullable=True)
+    intelligibility = Column(Float, nullable=True)
+    comprehensibility = Column(Float, nullable=True)
+    task_completion = Column(Float, nullable=True)
+    overall_quality = Column(Float, nullable=True)
+    rating_confidence = Column(Float, nullable=True)
+    unusable_recording = Column(Boolean, default=False)
+    comments = Column(Text, default="")
+    rating_duration_seconds = Column(Float, default=0.0)
+    rating_timestamp = Column(DateTime, default=datetime.utcnow)
+
+
+class QuestionnaireResponse(Base):
+    __tablename__ = "questionnaire_responses"
+
+    id = Column(Integer, primary_key=True)
+    participant_id = Column(String, index=True)
+    study_id = Column(Integer, default=1, index=True)
+    session_id = Column(String, default="")
+    questionnaire_type = Column(String, default="")
+    question_id = Column(String, default="")
+    response_value = Column(Text, default="")
+    response_numeric = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ConsentRecord(Base):
+    __tablename__ = "consent_records"
+
+    id = Column(Integer, primary_key=True)
+    participant_id = Column(String, index=True)
+    study_id = Column(Integer, default=1, index=True)
+    consent_version = Column(String, default="v1")
+    consent_given = Column(Boolean, default=False)
+    withdrawal_requested = Column(Boolean, default=False)
+    recorded_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ExportJob(Base):
+    __tablename__ = "export_jobs"
+
+    id = Column(Integer, primary_key=True)
+    report_type = Column(String, index=True)
+    path = Column(Text, default="")
+    anonymized = Column(Boolean, default=True)
+    requested_by = Column(String, default="")
+    status = Column(String, default="completed")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+
+    id = Column(Integer, primary_key=True)
+    actor_id = Column(String, default="")
+    action = Column(String, index=True)
+    entity_type = Column(String, default="")
+    entity_id = Column(String, default="")
+    reason = Column(Text, default="")
+    before_json = Column(Text, default="{}")
+    after_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class FeedbackTemplate(Base):
     __tablename__ = "feedback_templates"
 
@@ -467,10 +716,14 @@ def migrate_sqlite_columns():
             "class_id": "VARCHAR DEFAULT ''",
             "proficiency_level": "VARCHAR DEFAULT ''",
             "l1_background_optional": "VARCHAR DEFAULT ''",
+            "withdrawn": "BOOLEAN DEFAULT 0",
+            "withdrawal_reason_optional": "TEXT DEFAULT ''",
         },
         "tasks": {
             "task_code": "VARCHAR DEFAULT ''",
             "task_type": "VARCHAR DEFAULT 'practice'",
+            "session_type": "VARCHAR DEFAULT 'practice_intervention'",
+            "task_set_id": "INTEGER DEFAULT 0",
             "issue_types_json": "TEXT DEFAULT '[]'",
             "focus_phonemes_json": "TEXT DEFAULT '[]'",
             "word_phoneme_map_json": "TEXT DEFAULT '{}'",
@@ -487,6 +740,9 @@ def migrate_sqlite_columns():
         },
         "studies": {
             "locked": "BOOLEAN DEFAULT 0",
+            "lock_reason": "TEXT DEFAULT ''",
+            "locked_at": "DATETIME",
+            "unlocked_at": "DATETIME",
         },
         "conditions": {
             "show_comment": "BOOLEAN DEFAULT 1",
@@ -499,19 +755,42 @@ def migrate_sqlite_columns():
         },
         "attempts": {
             "study_id": "INTEGER DEFAULT 1",
+            "study_version_id": "INTEGER DEFAULT 0",
             "condition_id": "INTEGER DEFAULT 4",
             "system_version_id": "INTEGER DEFAULT 1",
+            "task_code": "VARCHAR DEFAULT ''",
+            "session_id": "VARCHAR DEFAULT ''",
+            "session_type": "VARCHAR DEFAULT ''",
+            "recording_start_time": "DATETIME",
+            "recording_end_time": "DATETIME",
+            "submitted_at": "DATETIME",
             "asr_adapter": "VARCHAR DEFAULT 'mock_asr'",
             "transcript_confidence_optional": "FLOAT DEFAULT 0",
+            "audio_duration": "FLOAT DEFAULT 0",
             "assessment_score": "FLOAT DEFAULT 0",
             "issue_types_detected_json": "TEXT DEFAULT '[]'",
             "alignment_json": "TEXT DEFAULT '{}'",
             "asr_sanity_json": "TEXT DEFAULT '{}'",
             "score_breakdown_json": "TEXT DEFAULT '{}'",
             "valid_audio": "BOOLEAN DEFAULT 1",
+            "invalid_audio_reason": "TEXT DEFAULT ''",
+            "assessment_provider": "VARCHAR DEFAULT ''",
+            "assessment_status": "VARCHAR DEFAULT 'not_run'",
+            "overall_score": "FLOAT",
+            "accuracy_score": "FLOAT",
+            "fluency_score": "FLOAT",
+            "completeness_score": "FLOAT",
+            "prosody_score": "FLOAT",
             "feedback_generated": "BOOLEAN DEFAULT 1",
             "feedback_shown": "BOOLEAN DEFAULT 1",
+            "feedback_displayed_to_learner": "BOOLEAN DEFAULT 1",
+            "feedback_viewed": "BOOLEAN DEFAULT 0",
+            "feedback_view_time": "FLOAT DEFAULT 0",
+            "next_attempt_id": "INTEGER DEFAULT 0",
+            "score_delta_from_previous_attempt": "FLOAT DEFAULT 0",
+            "target_issue_resolved": "BOOLEAN DEFAULT 0",
             "feedback_policy_id": "VARCHAR DEFAULT ''",
+            "raw_result_json": "TEXT DEFAULT '{}'",
         },
         "feedback_views": {
             "feedback_item_id": "INTEGER DEFAULT 0",
@@ -542,6 +821,8 @@ def migrate_sqlite_columns():
             "transcript_change_summary": "TEXT DEFAULT ''",
         },
     }
+    if not _database_url.startswith("sqlite"):
+        return
     with engine.begin() as conn:
         for table_name, table_columns in columns.items():
             existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(%s)" % table_name).fetchall()}

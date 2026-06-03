@@ -16,15 +16,34 @@ from .analysis.audio_features import analyze_audio
 from .analysis.feedback_generator import generate_feedback
 from .analysis.scoring import compute_practice_score
 from .analysis.text_alignment import align_text
-from .config import AUDIO_DIR, EXPORT_DIR
+from .config import (
+    ALLOWED_AUDIO_EXTENSIONS,
+    ALLOWED_AUDIO_TYPES,
+    API_BASE_URL,
+    AUDIO_DIR,
+    DATABASE_URL,
+    EXPORT_DIR,
+    FRONTEND_ORIGINS,
+    MAX_AUDIO_MB,
+    PRONUNCIATION_PROVIDER,
+    RESEARCH_MODE,
+    SYSTEM_VERSION,
+)
 from .config import ASR_MODE, WHISPER_COMPUTE_TYPE, WHISPER_DEVICE, WHISPER_MODEL_SIZE
 from .database import (
     Annotation,
+    AudioFile,
+    AuditLog,
     Attempt,
     ClassRoom,
     Condition,
+    ConsentRecord,
+    ExportJob,
+    FeedbackEvent,
     FeedbackItem,
+    FeedbackUptakeState,
     FeedbackView,
+    HumanRating,
     DiagnosisRecord,
     ExternalAssessmentScore,
     IssueRecord,
@@ -33,14 +52,21 @@ from .database import (
     Participant,
     PeerFeedback,
     PeerReviewAssignment,
+    PhonemeLevelAssessment,
     PronunciationEvidence,
+    PronunciationAssessmentResult,
+    QuestionnaireResponse,
+    ResearchSession,
     RevisionEvent,
     Study,
+    StudyVersion,
     SystemVersion,
     TeacherFeedback,
     TeacherOrchestrationEvent,
     Task,
+    TaskSet,
     User,
+    WordLevelAssessment,
     get_db,
 )
 from .schemas import AnnotationCreate, ParticipantCreate, ParticipantRead, TaskCreate, TaskRead
@@ -54,6 +80,7 @@ from .services.feedback.feedback_policy import (
 from .services.feedback.issue_taxonomy import issue_records_for_alignment
 from .services.asr_sanity import check_asr_sanity
 from .services.learner_model.state_update import update_learner_state
+from .services.pronunciation_assessment import get_pronunciation_provider, provider_status
 from .services.pronunciation.evidence_builder import build_rule_based_evidence
 from .services.validation.agreement import annotation_agreement
 from .services.verbalization.template_verbalizer import feedback_from_issue, feedback_from_diagnosis
@@ -67,6 +94,148 @@ def _json(value, default):
         return json.loads(value or default)
     except Exception:
         return json.loads(default)
+
+
+def _anonymized_code(value):
+    text = str(value or "")
+    return "P%06d" % (abs(hash(text)) % 1000000)
+
+
+def _storage_status(path):
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".write_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return {"path": str(path), "writable": True}
+    except Exception as exc:
+        return {"path": str(path), "writable": False, "error": str(exc)}
+
+
+def _database_status(db):
+    try:
+        db.query(Study).count()
+        return {"connected": True, "url": "configured" if DATABASE_URL else "sqlite"}
+    except Exception as exc:
+        return {"connected": False, "error": str(exc)}
+
+
+def _audit(db, action, entity_type="", entity_id="", reason="", actor_id="", before=None, after=None):
+    db.add(AuditLog(
+        actor_id=actor_id,
+        action=action,
+        entity_type=entity_type,
+        entity_id=str(entity_id or ""),
+        reason=reason or "",
+        before_json=json.dumps(before or {}, default=str),
+        after_json=json.dumps(after or {}, default=str),
+    ))
+
+
+def _validate_upload_metadata(audio):
+    content_type = (audio.content_type or "application/octet-stream").lower()
+    ext = (Path(audio.filename or "audio.webm").suffix or ".webm").lower()
+    if content_type not in ALLOWED_AUDIO_TYPES:
+        raise HTTPException(status_code=400, detail="Unsupported audio content type: %s" % content_type)
+    if ext not in ALLOWED_AUDIO_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Unsupported audio file extension: %s" % ext)
+    return content_type, ext
+
+
+def _structured_audio_folder(study, participant, task):
+    study_code = "study_%s" % getattr(study, "id", 1)
+    participant_code = getattr(participant, "participant_code", "") or getattr(participant, "participant_id", "participant")
+    task_code = getattr(task, "task_code", "") or ("task_%s" % getattr(task, "id", "0"))
+    return AUDIO_DIR / study_code / participant_code / task_code
+
+
+def _store_assessment_result(db, attempt, dto):
+    row = PronunciationAssessmentResult(
+        study_id=attempt.study_id,
+        study_version_id=getattr(attempt, "study_version_id", 0) or 0,
+        participant_id=attempt.participant_id,
+        task_id=attempt.task_id,
+        attempt_id=attempt.id,
+        provider_name=dto.provider_name,
+        provider_version=dto.provider_version,
+        request_id=dto.request_id,
+        reference_text=dto.reference_text,
+        recognized_text=dto.recognized_text,
+        overall_score=dto.overall_score,
+        accuracy_score=dto.accuracy_score,
+        fluency_score=dto.fluency_score,
+        completeness_score=dto.completeness_score,
+        prosody_score=dto.prosody_score,
+        pronunciation_score=dto.pronunciation_score,
+        confidence=dto.confidence,
+        evidence_level=dto.evidence_level,
+        status=dto.status,
+        error_message=dto.error_message,
+        raw_response_json=json.dumps(dto.raw_response_json or {}),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    for item in dto.word_level_results:
+        db.add(WordLevelAssessment(
+            result_id=row.id,
+            attempt_id=attempt.id,
+            word=str(item.get("word", "")),
+            reference_word=str(item.get("reference_word", item.get("word", ""))),
+            accuracy_score=item.get("accuracy_score"),
+            error_type=str(item.get("error_type", "")),
+            confidence=float(item.get("confidence") or 0),
+            raw_json=json.dumps(item.get("raw", item)),
+        ))
+    for item in dto.phoneme_level_results:
+        db.add(PhonemeLevelAssessment(
+            result_id=row.id,
+            attempt_id=attempt.id,
+            word=str(item.get("word", "")),
+            phoneme=str(item.get("phoneme", "")),
+            accuracy_score=item.get("accuracy_score"),
+            error_type=str(item.get("error_type", "")),
+            confidence=float(item.get("confidence") or 0),
+            raw_json=json.dumps(item.get("raw", item)),
+        ))
+    db.commit()
+    return row
+
+
+def _log_feedback_event(db, participant_id, study_id, task_id, attempt_id, event_type, feedback_item_id=0, event_value="", duration_ms=0, metadata=None):
+    event = FeedbackEvent(
+        participant_id=participant_id,
+        study_id=study_id,
+        task_id=task_id,
+        attempt_id=attempt_id,
+        feedback_item_id=feedback_item_id,
+        event_type=event_type,
+        event_value=event_value or "",
+        duration_ms_optional=int(duration_ms or 0),
+        metadata_json=json.dumps(metadata or {}),
+    )
+    db.add(event)
+    return event
+
+
+def _compute_feedback_uptake(db, participant_id, task_id, attempt_id):
+    viewed = db.query(FeedbackEvent).filter(
+        FeedbackEvent.attempt_id == attempt_id,
+        FeedbackEvent.event_type.in_(["learner_opened_feedback", "feedback_visible_to_learner"]),
+    ).count() > 0 or db.query(FeedbackView).filter(FeedbackView.attempt_id == attempt_id).count() > 0
+    revision = db.query(RevisionEvent).filter(RevisionEvent.previous_attempt_id == attempt_id).first()
+    improved = bool(revision and (revision.score_delta > 0 or revision.word_match_delta > 0))
+    sustained = False
+    state = derive_feedback_use_state(viewed, revision is not None, improved, sustained)
+    rules = {"viewed": viewed, "has_revision": revision is not None, "improved": improved, "sustained": sustained}
+    row = db.query(FeedbackUptakeState).filter(FeedbackUptakeState.attempt_id == attempt_id).first()
+    if not row:
+        row = FeedbackUptakeState(participant_id=participant_id, task_id=task_id, attempt_id=attempt_id)
+        db.add(row)
+    row.uptake_state = state
+    row.rules_json = json.dumps(rules)
+    row.computed_at = datetime.utcnow()
+    return row
 
 
 def _task_to_schema(task):
@@ -128,8 +297,13 @@ def _attempt_to_dict(db, attempt, base_score=None):
         "attempt_number": attempt.attempt_number,
         "audio_path": attempt.audio_path,
         "asr_adapter": attempt.asr_adapter,
+        "assessment_provider": getattr(attempt, "assessment_provider", ""),
+        "assessment_status": getattr(attempt, "assessment_status", ""),
+        "pronunciation_provider": getattr(attempt, "assessment_provider", ""),
         "asr_transcript": attempt.asr_transcript if feedback.get("show_transcript", True) else "",
+        "raw_asr_transcript": attempt.asr_transcript,
         "duration_seconds": attempt.duration_seconds,
+        "audio_duration": getattr(attempt, "audio_duration", attempt.duration_seconds),
         "speech_rate_wpm": attempt.speech_rate_wpm,
         "word_match_score": attempt.word_match_score,
         "assessment_score": attempt.assessment_score,
@@ -140,6 +314,7 @@ def _attempt_to_dict(db, attempt, base_score=None):
         "valid_audio": bool(getattr(attempt, "valid_audio", True)),
         "no_speech_detected": bool(feedback.get("no_speech_detected", False)),
         "invalid_reasons": feedback.get("invalid_reasons", []),
+        "invalid_audio_reason": getattr(attempt, "invalid_audio_reason", ""),
         "feedback_generated": bool(attempt.feedback_generated),
         "feedback_shown": bool(attempt.feedback_shown),
         "feedback_type": attempt.feedback_type,
@@ -152,6 +327,16 @@ def _attempt_to_dict(db, attempt, base_score=None):
         "alignment": _json(getattr(attempt, "alignment_json", "{}"), "{}"),
         "asr_sanity": _json(getattr(attempt, "asr_sanity_json", "{}"), "{}"),
         "score_breakdown": _json(getattr(attempt, "score_breakdown_json", "{}"), "{}"),
+        "backend_diagnostics": {
+            "asr_adapter": attempt.asr_adapter,
+            "asr_transcript": attempt.asr_transcript,
+            "asr_sanity": _json(getattr(attempt, "asr_sanity_json", "{}"), "{}"),
+            "assessment_provider": getattr(attempt, "assessment_provider", ""),
+            "assessment_status": getattr(attempt, "assessment_status", ""),
+            "valid_audio": bool(getattr(attempt, "valid_audio", True)),
+            "invalid_reasons": feedback.get("invalid_reasons", []),
+            "score_breakdown": _json(getattr(attempt, "score_breakdown_json", "{}"), "{}"),
+        },
         "feedback_use_state": _feedback_use_state(db, attempt),
         "feedback_viewed": db.query(FeedbackView).filter(FeedbackView.attempt_id == attempt.id).count() > 0,
         "re_recorded": db.query(RevisionEvent).filter(RevisionEvent.previous_attempt_id == attempt.id).count() > 0,
@@ -279,15 +464,30 @@ def _create_asr_supported_records(db, attempt, task, alignment, issue_records):
 
 
 @router.get("/health")
-def health():
+def health(db: Session = Depends(get_db)):
+    locked_studies = db.query(Study).filter(Study.locked == True).count()  # noqa: E712
+    provider = provider_status(db)
+    audio_status = _storage_status(AUDIO_DIR)
+    export_status = _storage_status(EXPORT_DIR)
     return {
-        "status": "ok",
+        "status": "ok" if _database_status(db)["connected"] and audio_status["writable"] else "degraded",
+        "database": _database_status(db),
+        "storage": {"audio": audio_status, "exports": export_status},
+        "provider": provider,
+        "pronunciation_provider": provider.get("provider_name", PRONUNCIATION_PROVIDER),
+        "provider_research_usable": bool(provider.get("research_usable", False)),
+        "research_mode": RESEARCH_MODE,
+        "api_base_url": API_BASE_URL,
+        "frontend_origins": FRONTEND_ORIGINS,
+        "study_lock_status": {"locked_studies": locked_studies},
         "mock_mode": ASR_MODE == "mock",
         "asr_adapter": ASR_MODE,
+        "asr": {"adapter": ASR_MODE},
         "whisper_model_size": WHISPER_MODEL_SIZE if ASR_MODE == "faster_whisper" else "",
         "whisper_device": WHISPER_DEVICE if ASR_MODE == "faster_whisper" else "",
         "whisper_compute_type": WHISPER_COMPUTE_TYPE if ASR_MODE == "faster_whisper" else "",
-        "app_version": "0.2.0",
+        "system_version": SYSTEM_VERSION,
+        "app_version": SYSTEM_VERSION,
     }
 
 
@@ -729,14 +929,163 @@ def task_focus_word_audio(task_id: int, word: str = "", db: Session = Depends(ge
 def system_status(db: Session = Depends(get_db)):
     return {
         "status": "ok",
-        "backend": health(),
+        "backend": health(db),
         "users": db.query(User).count(),
         "tasks": db.query(Task).count(),
         "attempts": db.query(Attempt).count(),
         "teacher_feedback": db.query(TeacherFeedback).count(),
         "peer_feedback": db.query(PeerFeedback).count(),
+        "pronunciation_provider": provider_status(db),
+        "studies_locked": db.query(Study).filter(Study.locked == True).count(),  # noqa: E712
+        "research_mode": RESEARCH_MODE,
         "visible_feature_rule": "Only role-scoped pilot features are shown in normal UI.",
     }
+
+
+@router.get("/pilot-readiness")
+def pilot_readiness(db: Session = Depends(get_db)):
+    provider = provider_status(db)
+    studies = db.query(Study).count()
+    conditions = {row.condition_code for row in db.query(Condition).all()}
+    participants_assigned = db.query(Participant).filter(Participant.group_id.in_(["G0", "G1", "G2", "G3"])).count()
+    tasks = db.query(Task).filter(Task.active == True).count()  # noqa: E712
+    checks = [
+        {"check": "backend_connected", "ok": True},
+        {"check": "database_writable", "ok": _database_status(db)["connected"]},
+        {"check": "audio_directory_writable", "ok": _storage_status(AUDIO_DIR)["writable"]},
+        {"check": "export_directory_writable", "ok": _storage_status(EXPORT_DIR)["writable"]},
+        {"check": "pronunciation_provider_configured", "ok": bool(provider.get("configured"))},
+        {"check": "pronunciation_provider_research_usable", "ok": bool(provider.get("research_usable")) or not RESEARCH_MODE},
+        {"check": "at_least_one_study_exists", "ok": studies > 0},
+        {"check": "g0_g3_conditions_exist", "ok": {"G0", "G1", "G2", "G3"}.issubset(conditions)},
+        {"check": "participants_assigned", "ok": participants_assigned > 0},
+        {"check": "tasks_assigned", "ok": tasks > 0},
+        {"check": "model_audio_or_browser_fallback", "ok": True},
+        {"check": "no_demo_mode_in_research_collection", "ok": not (RESEARCH_MODE and provider.get("provider_name") == "mock")},
+    ]
+    return {
+        "ready": all(item["ok"] for item in checks),
+        "research_mode": RESEARCH_MODE,
+        "provider": provider,
+        "checks": checks,
+    }
+
+
+@router.post("/feedback-events")
+def create_feedback_event(payload: dict, db: Session = Depends(get_db)):
+    attempt_id = int(payload.get("attempt_id") or 0)
+    attempt = db.query(Attempt).filter(Attempt.id == attempt_id).first()
+    if not attempt:
+        raise HTTPException(status_code=404, detail="Attempt not found")
+    event = _log_feedback_event(
+        db,
+        attempt.participant_id,
+        attempt.study_id,
+        attempt.task_id,
+        attempt.id,
+        payload.get("event_type", "learner_opened_feedback"),
+        int(payload.get("feedback_item_id") or 0),
+        payload.get("event_value", ""),
+        int(payload.get("duration_ms_optional") or 0),
+        payload.get("metadata_json") or payload.get("metadata") or {},
+    )
+    uptake = _compute_feedback_uptake(db, attempt.participant_id, attempt.task_id, attempt.id)
+    db.commit()
+    return {"event": clean_model(event), "feedback_uptake_state": uptake.uptake_state}
+
+
+@router.get("/human-ratings/queue")
+def human_rating_queue(rater_id: str = "", include_intervention: bool = False, db: Session = Depends(get_db)):
+    query = db.query(Attempt).filter(Attempt.valid_audio == True).order_by(Attempt.created_at.asc())  # noqa: E712
+    attempts = query.all()
+    rows = []
+    for attempt in attempts:
+        task = db.query(Task).filter(Task.id == attempt.task_id).first()
+        session_type = getattr(attempt, "session_type", "") or (task.task_type if task else "")
+        if not include_intervention and session_type == "practice_intervention":
+            continue
+        already = db.query(HumanRating).filter(HumanRating.attempt_id == attempt.id, HumanRating.rater_id == rater_id).first() if rater_id else None
+        if already:
+            continue
+        rows.append({
+            "attempt_id": attempt.id,
+            "anonymized_participant_id": _anonymized_code(attempt.participant_id),
+            "task_id": attempt.task_id,
+            "task_code": getattr(attempt, "task_code", ""),
+            "session_type": session_type,
+            "attempt_number": attempt.attempt_number,
+            "audio_url": "/api/attempts/%s/audio" % attempt.id,
+        })
+    return rows
+
+
+@router.post("/human-ratings")
+def create_human_rating(payload: dict, db: Session = Depends(get_db)):
+    attempt = db.query(Attempt).filter(Attempt.id == int(payload.get("attempt_id") or 0)).first()
+    if not attempt:
+        raise HTTPException(status_code=404, detail="Attempt not found")
+    row = HumanRating(
+        attempt_id=attempt.id,
+        anonymized_participant_id=_anonymized_code(attempt.participant_id),
+        task_id=attempt.task_id,
+        session_type=getattr(attempt, "session_type", ""),
+        rater_id=payload.get("rater_id", ""),
+        rubric_version=payload.get("rubric_version", "rubric_v1"),
+        pronunciation=payload.get("pronunciation"),
+        fluency=payload.get("fluency"),
+        intelligibility=payload.get("intelligibility"),
+        comprehensibility=payload.get("comprehensibility"),
+        task_completion=payload.get("task_completion"),
+        overall_quality=payload.get("overall_quality"),
+        rating_confidence=payload.get("rating_confidence"),
+        unusable_recording=bool(payload.get("unusable_recording", False)),
+        comments=payload.get("comments", ""),
+        rating_duration_seconds=float(payload.get("rating_duration_seconds") or 0),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return clean_model(row)
+
+
+@router.post("/questionnaire-responses")
+def create_questionnaire_response(payload: dict, db: Session = Depends(get_db)):
+    responses = payload.get("responses") if isinstance(payload.get("responses"), list) else [payload]
+    rows = []
+    for item in responses:
+        row = QuestionnaireResponse(
+            participant_id=item.get("participant_id", payload.get("participant_id", "")),
+            study_id=int(item.get("study_id", payload.get("study_id", 1)) or 1),
+            session_id=item.get("session_id", payload.get("session_id", "")),
+            questionnaire_type=item.get("questionnaire_type", payload.get("questionnaire_type", "")),
+            question_id=item.get("question_id", ""),
+            response_value=str(item.get("response_value", "")),
+            response_numeric=item.get("response_numeric"),
+        )
+        db.add(row)
+        rows.append(row)
+    db.commit()
+    return {"created": len(rows), "responses": [clean_model(row) for row in rows]}
+
+
+@router.post("/consent-records")
+def create_consent_record(payload: dict, db: Session = Depends(get_db)):
+    row = ConsentRecord(
+        participant_id=payload.get("participant_id", ""),
+        study_id=int(payload.get("study_id", 1) or 1),
+        consent_version=payload.get("consent_version", "v1"),
+        consent_given=bool(payload.get("consent_given", False)),
+        withdrawal_requested=bool(payload.get("withdrawal_requested", False)),
+    )
+    if row.withdrawal_requested:
+        participant = db.query(Participant).filter(Participant.participant_id == row.participant_id).first()
+        if participant:
+            participant.withdrawn = True
+            participant.withdrawal_reason_optional = payload.get("withdrawal_reason_optional", "")
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return clean_model(row)
 
 
 @router.post("/participants", response_model=ParticipantRead)
@@ -798,9 +1147,53 @@ def lock_study(study_id: int, db: Session = Depends(get_db)):
     study = db.query(Study).filter(Study.id == study_id).first()
     if not study:
         raise HTTPException(status_code=404, detail="Study not found")
+    before = clean_model(study)
     study.locked = True
+    study.lock_reason = "Locked before research data collection."
+    study.locked_at = datetime.utcnow()
+    _audit(db, "study_locked", "study", study_id, study.lock_reason, before=before, after={"locked": True})
     db.commit()
     return {"ok": True, "locked": True}
+
+
+@router.post("/studies/{study_id}/unlock")
+def unlock_study(study_id: int, payload: dict = None, db: Session = Depends(get_db)):
+    payload = payload or {}
+    reason = (payload.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="Unlock reason is required.")
+    study = db.query(Study).filter(Study.id == study_id).first()
+    if not study:
+        raise HTTPException(status_code=404, detail="Study not found")
+    before = clean_model(study)
+    study.locked = False
+    study.unlocked_at = datetime.utcnow()
+    _audit(db, "study_unlocked", "study", study_id, reason, actor_id=payload.get("actor_id", ""), before=before, after={"locked": False})
+    db.commit()
+    return {"ok": True, "locked": False, "reason": reason}
+
+
+@router.post("/studies/{study_id}/versions")
+def create_study_version(study_id: int, payload: dict = None, db: Session = Depends(get_db)):
+    payload = payload or {}
+    study = db.query(Study).filter(Study.id == study_id).first()
+    if not study:
+        raise HTTPException(status_code=404, detail="Study not found")
+    version = StudyVersion(
+        study_id=study_id,
+        version_code=payload.get("version_code", "v%s" % (db.query(StudyVersion).filter(StudyVersion.study_id == study_id).count() + 1)),
+        description=payload.get("description", ""),
+        task_manifest_json=json.dumps([clean_model(task) for task in db.query(Task).all()]),
+        condition_manifest_json=json.dumps([clean_model(condition) for condition in db.query(Condition).filter(Condition.study_id == study_id).all()]),
+        provider_name=PRONUNCIATION_PROVIDER,
+        feedback_policy_version=payload.get("feedback_policy_version", "policy_v1"),
+        created_by=payload.get("created_by", ""),
+    )
+    db.add(version)
+    _audit(db, "study_version_created", "study", study_id, payload.get("reason", ""), actor_id=payload.get("created_by", ""), after={"version_code": version.version_code})
+    db.commit()
+    db.refresh(version)
+    return clean_model(version)
 
 
 @router.post("/system-version/create")
@@ -1024,6 +1417,7 @@ def analyze_attempt(
     audio: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
+    content_type, ext = _validate_upload_metadata(audio)
     condition_key = normalize_condition(group_id)
     condition = db.query(Condition).filter(Condition.condition_code == condition_key).first()
     participant = db.query(Participant).filter(Participant.participant_id == participant_id).first()
@@ -1038,16 +1432,21 @@ def analyze_attempt(
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    study = db.query(Study).filter(Study.id == study_id).first() or db.query(Study).first()
 
     previous = db.query(Attempt).filter(Attempt.participant_id == participant_id, Attempt.task_id == task_id).order_by(Attempt.attempt_number.desc()).first()
     system_version = db.query(SystemVersion).order_by(SystemVersion.id.desc()).first()
+    study_version = db.query(StudyVersion).filter(StudyVersion.study_id == study_id).order_by(StudyVersion.id.desc()).first()
     attempt_number = previous.attempt_number + 1 if previous else 1
-    ext = Path(audio.filename or "audio.webm").suffix or ".webm"
-    folder = AUDIO_DIR / participant_id / str(task_id)
+    folder = _structured_audio_folder(study, participant, task)
     folder.mkdir(parents=True, exist_ok=True)
     audio_path = folder / ("attempt_%s%s" % (attempt_number, ext))
     with audio_path.open("wb") as f:
         shutil.copyfileobj(audio.file, f)
+    file_size = audio_path.stat().st_size
+    if file_size > MAX_AUDIO_MB * 1024 * 1024:
+        audio_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=413, detail="Audio file exceeds %.1f MB limit." % MAX_AUDIO_MB)
     if transcript_hint:
         audio_path.with_suffix(".txt").write_text(transcript_hint, encoding="utf-8")
 
@@ -1061,6 +1460,21 @@ def analyze_attempt(
         features.setdefault("invalid_reasons", []).extend(asr_sanity["warnings"])
     score_result = compute_practice_score(alignment, features)
     score = score_result["practice_score"]
+    provider_result = None
+    if RESEARCH_MODE and PRONUNCIATION_PROVIDER in ["disabled", "mock"]:
+        raise HTTPException(status_code=503, detail="Research mode requires a real pronunciation provider, not %s." % PRONUNCIATION_PROVIDER)
+    if not features.get("no_speech_detected"):
+        provider = get_pronunciation_provider(db=db)
+        provider_result = provider.assess(audio_path, task.target_text, {"task_id": task.id, "task_code": task.task_code, "session_type": getattr(task, "session_type", "")}, participant, {
+            "practice_score": score,
+            "fluency_proxy_score": max(0, min(100, 100 - abs(features["speech_rate_wpm"] - 120) / 2)),
+            "word_match_score": alignment["word_match_score"],
+            "asr_transcript": transcript,
+        })
+        if provider_result.status == "error" and RESEARCH_MODE:
+            raise HTTPException(status_code=503, detail=provider_result.error_message)
+        if provider_result.overall_score is not None and provider_result.evidence_level != "practice_indicator":
+            score = round(float(provider_result.overall_score), 2)
     issues = _detect_issue_types(task, alignment, features)
     structured = generate_feedback("G3", score or 0, task.target_text, transcript, alignment, features)
     target_word = _target_word_from_alignment(task, alignment)
@@ -1082,6 +1496,11 @@ def analyze_attempt(
     structured["score_breakdown"] = score_result["score_breakdown"]
     structured["score_note"] = score_result["score_note"]
     structured["asr_sanity"] = asr_sanity
+    structured["evidence_level"] = provider_result.evidence_level if provider_result else "asr_supported_cue"
+    structured["pronunciation_provider"] = provider_result.provider_name if provider_result else PRONUNCIATION_PROVIDER
+    structured["provider_status"] = provider_result.status if provider_result else "not_run"
+    if provider_result and provider_result.evidence_level == "practice_indicator":
+        structured["score_note"] = "Practice indicator only. Mock pronunciation assessment is not valid research evidence."
     if features.get("no_speech_detected"):
         score = 0
         feedback = {
@@ -1112,13 +1531,19 @@ def analyze_attempt(
         study_id=study_id,
         condition_id=condition.id if condition else 4,
         system_version_id=system_version.id if system_version else 1,
+        study_version_id=study_version.id if study_version else 0,
         task_id=task_id,
+        task_code=task.task_code or ("task_%s" % task.id),
+        session_id=session_id,
+        session_type=getattr(task, "session_type", "") or getattr(task, "task_type", ""),
         group_id=condition_key,
         attempt_number=attempt_number,
+        submitted_at=datetime.utcnow(),
         audio_path=str(audio_path),
         asr_adapter=ASR_MODE,
         asr_transcript=transcript,
         duration_seconds=features["duration_seconds"],
+        audio_duration=features["duration_seconds"],
         speech_rate_wpm=features["speech_rate_wpm"],
         word_match_score=alignment["word_match_score"],
         assessment_score=score,
@@ -1129,16 +1554,47 @@ def analyze_attempt(
         asr_sanity_json=json.dumps(asr_sanity),
         score_breakdown_json=json.dumps(score_result),
         valid_audio=bool(features.get("valid_audio", True)),
+        invalid_audio_reason="; ".join(features.get("invalid_reasons", [])),
+        assessment_provider=provider_result.provider_name if provider_result else PRONUNCIATION_PROVIDER,
+        assessment_status=provider_result.status if provider_result else "not_run",
+        overall_score=provider_result.overall_score if provider_result else score,
+        accuracy_score=provider_result.accuracy_score if provider_result else None,
+        fluency_score=provider_result.fluency_score if provider_result else None,
+        completeness_score=provider_result.completeness_score if provider_result else None,
+        prosody_score=provider_result.prosody_score if provider_result else None,
         long_pause_count=features["long_pause_count"],
         feedback_generated=True,
         feedback_shown=feedback_shown,
+        feedback_displayed_to_learner=feedback_shown,
         feedback_type=feedback_type,
         feedback_policy_id=condition_key,
         feedback_json=json.dumps(feedback),
+        raw_result_json=json.dumps(provider_result.raw_response_json if provider_result else {}),
     )
     db.add(attempt)
     db.commit()
     db.refresh(attempt)
+    db.add(AudioFile(
+        study_id=study_id,
+        participant_id=participant_id,
+        task_id=task_id,
+        attempt_id=attempt.id,
+        storage_path=str(audio_path),
+        original_filename=audio.filename or "",
+        content_type=content_type,
+        file_size_bytes=file_size,
+        duration_seconds=features["duration_seconds"],
+        valid_audio=bool(features.get("valid_audio", True)),
+        invalid_reasons_json=json.dumps(features.get("invalid_reasons", [])),
+    ))
+    if provider_result:
+        provider_result.raw_response_json = {
+            **(provider_result.raw_response_json or {}),
+            "attempt_id": attempt.id,
+            "file_name": audio.filename or "",
+            "file_size_bytes": file_size,
+        }
+        _store_assessment_result(db, attempt, provider_result)
 
     if workflow_request == "teacher_feedback":
         db.add(TeacherOrchestrationEvent(
@@ -1189,8 +1645,11 @@ def analyze_attempt(
     db.add(item)
     db.commit()
     db.refresh(item)
+    _log_feedback_event(db, participant_id, study_id, task_id, attempt.id, "feedback_generated", item.id, metadata={"feedback_type": feedback_type, "condition_group": condition_key})
     if feedback_shown:
         db.add(FeedbackView(participant_id=participant_id, task_id=task_id, attempt_id=attempt.id, feedback_item_id=item.id))
+        attempt.feedback_viewed = True
+        _log_feedback_event(db, participant_id, study_id, task_id, attempt.id, "feedback_visible_to_learner", item.id, metadata={"show_score": feedback.get("show_score"), "show_comment": feedback.get("show_comment")})
 
     task_issues = _json(task.issue_types_json, "[]")
     focus_words = _json(task.focus_words, "[]")
@@ -1209,18 +1668,27 @@ def analyze_attempt(
         _create_asr_supported_records(db, attempt, task, alignment, alignment_issue_records)
 
     if previous:
+        previous.next_attempt_id = attempt.id
+        previous_score = previous.assessment_score or _attempt_score(previous) or 0
+        attempt.score_delta_from_previous_attempt = (score or 0) - previous_score
         prev_score = previous.assessment_score or _attempt_score(previous) or 0
-        db.add(RevisionEvent(
+        repeated_issue_reduced = len(issues) < len(_json(previous.issue_types_detected_json, "[]"))
+        attempt.target_issue_resolved = repeated_issue_reduced
+        revision = RevisionEvent(
             participant_id=participant_id,
             task_id=task_id,
             previous_attempt_id=previous.id,
             new_attempt_id=attempt.id,
             score_delta=(score or 0) - prev_score,
             word_match_delta=alignment["word_match_score"] - previous.word_match_score,
-            repeated_issue_reduced=len(issues) < len(_json(previous.issue_types_detected_json, "[]")),
+            repeated_issue_reduced=repeated_issue_reduced,
             transcript_change="%s -> %s" % (previous.asr_transcript, transcript),
             transcript_change_summary="Word match delta: %.2f" % (alignment["word_match_score"] - previous.word_match_score),
-        ))
+        )
+        db.add(revision)
+        _log_feedback_event(db, participant_id, study_id, task_id, previous.id, "learner_submitted_revised_attempt", item.id, event_value=str(attempt.id), metadata={"score_delta": revision.score_delta, "word_match_delta": revision.word_match_delta})
+        _compute_feedback_uptake(db, participant_id, task_id, previous.id)
+    _compute_feedback_uptake(db, participant_id, task_id, attempt.id)
     if features.get("valid_audio", True):
         update_learner_state(db, participant_id, attempt)
     db.commit()
@@ -1251,8 +1719,24 @@ def mark_feedback_viewed(feedback_item_id: int, payload: dict = None, db: Sessio
         raise HTTPException(status_code=404, detail="Feedback item not found")
     view = FeedbackView(participant_id=item.participant_id, task_id=item.task_id, attempt_id=item.attempt_id, feedback_item_id=item.id, view_duration_ms_optional=(payload or {}).get("view_duration_ms_optional", 0))
     db.add(view)
+    attempt = db.query(Attempt).filter(Attempt.id == item.attempt_id).first()
+    if attempt:
+        attempt.feedback_viewed = True
+        attempt.feedback_view_time = float((payload or {}).get("view_duration_ms_optional", 0) or 0) / 1000
+    _log_feedback_event(
+        db,
+        item.participant_id,
+        attempt.study_id if attempt else 1,
+        item.task_id,
+        item.attempt_id,
+        "learner_opened_feedback",
+        item.id,
+        duration_ms=(payload or {}).get("view_duration_ms_optional", 0),
+        metadata=payload or {},
+    )
+    uptake = _compute_feedback_uptake(db, item.participant_id, item.task_id, item.attempt_id)
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "feedback_uptake_state": uptake.uptake_state}
 
 
 @router.get("/feedback/pending-review")
@@ -1568,6 +2052,8 @@ def _write_csv(db, report_type, rows):
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
+    db.add(ExportJob(report_type=report_type, path=str(path), anonymized=True, status="completed"))
+    db.commit()
     return FileResponse(path, filename=path.name, media_type="text/csv")
 
 
@@ -1656,6 +2142,106 @@ def export_asr_evidence(db: Session = Depends(get_db)):
 @router.get("/exports/pronunciation-evidence")
 def export_pronunciation_evidence(db: Session = Depends(get_db)):
     return _write_csv(db, "pronunciation_evidence", [clean_model(row) for row in db.query(PronunciationEvidence).all()])
+
+
+@router.get("/exports/pronunciation-assessment-results")
+def export_pronunciation_assessment_results(db: Session = Depends(get_db)):
+    return _write_csv(db, "pronunciation_assessment_results", [clean_model(row) for row in db.query(PronunciationAssessmentResult).all()])
+
+
+@router.get("/exports/word-level-results")
+def export_word_level_results(db: Session = Depends(get_db)):
+    return _write_csv(db, "word_level_results", [clean_model(row) for row in db.query(WordLevelAssessment).all()])
+
+
+@router.get("/exports/phoneme-level-results")
+def export_phoneme_level_results(db: Session = Depends(get_db)):
+    return _write_csv(db, "phoneme_level_results", [clean_model(row) for row in db.query(PhonemeLevelAssessment).all()])
+
+
+@router.get("/exports/feedback-events")
+def export_feedback_events(db: Session = Depends(get_db)):
+    return _write_csv(db, "feedback_events", [clean_model(row) for row in db.query(FeedbackEvent).all()])
+
+
+@router.get("/exports/feedback-uptake-states")
+def export_feedback_uptake_states(db: Session = Depends(get_db)):
+    return _write_csv(db, "feedback_uptake_states", [clean_model(row) for row in db.query(FeedbackUptakeState).all()])
+
+
+@router.get("/exports/human-ratings")
+def export_human_ratings(db: Session = Depends(get_db)):
+    return _write_csv(db, "human_ratings", [clean_model(row) for row in db.query(HumanRating).all()])
+
+
+@router.get("/exports/questionnaire-responses")
+def export_questionnaire_responses(db: Session = Depends(get_db)):
+    return _write_csv(db, "questionnaire_responses", [clean_model(row) for row in db.query(QuestionnaireResponse).all()])
+
+
+@router.get("/exports/audit-log")
+def export_audit_log(db: Session = Depends(get_db)):
+    return _write_csv(db, "audit_log", [clean_model(row) for row in db.query(AuditLog).all()])
+
+
+def _analysis_ready_rows(db):
+    rows = []
+    for attempt in db.query(Attempt).order_by(Attempt.created_at.asc()).all():
+        participant = db.query(Participant).filter(Participant.participant_id == attempt.participant_id).first()
+        if participant and getattr(participant, "withdrawn", False):
+            continue
+        feedback = _json(attempt.feedback_json, "{}")
+        assessment = db.query(PronunciationAssessmentResult).filter(PronunciationAssessmentResult.attempt_id == attempt.id).order_by(PronunciationAssessmentResult.id.desc()).first()
+        uptake = db.query(FeedbackUptakeState).filter(FeedbackUptakeState.attempt_id == attempt.id).first()
+        ratings = db.query(HumanRating).filter(HumanRating.attempt_id == attempt.id).all()
+        base = {
+            "participant_code_anonymized": _anonymized_code(attempt.participant_id),
+            "condition_group": feedback.get("condition_group", attempt.group_id),
+            "class_id": getattr(participant, "class_id", "") if participant else "",
+            "proficiency_level": getattr(participant, "proficiency_level", "") if participant else "",
+            "session_type": getattr(attempt, "session_type", ""),
+            "task_code": getattr(attempt, "task_code", ""),
+            "task_id": attempt.task_id,
+            "attempt_number": attempt.attempt_number,
+            "automatic_overall_score": getattr(assessment, "overall_score", None) if assessment else getattr(attempt, "overall_score", None),
+            "accuracy_score": getattr(assessment, "accuracy_score", None) if assessment else "",
+            "fluency_score": getattr(assessment, "fluency_score", None) if assessment else "",
+            "completeness_score": getattr(assessment, "completeness_score", None) if assessment else "",
+            "feedback_type": attempt.feedback_type,
+            "feedback_displayed_to_learner": getattr(attempt, "feedback_displayed_to_learner", False),
+            "feedback_viewed": getattr(attempt, "feedback_viewed", False),
+            "revision_count": db.query(RevisionEvent).filter(RevisionEvent.previous_attempt_id == attempt.id).count(),
+            "uptake_state": uptake.uptake_state if uptake else _feedback_use_state(db, attempt),
+            "valid_audio": getattr(attempt, "valid_audio", True),
+            "system_version": SYSTEM_VERSION,
+            "provider_name": getattr(assessment, "provider_name", getattr(attempt, "assessment_provider", "")) if assessment else getattr(attempt, "assessment_provider", ""),
+            "provider_version": getattr(assessment, "provider_version", "") if assessment else "",
+        }
+        if ratings:
+            for rating in ratings:
+                rows.append({**base, "human_rater_id": rating.rater_id, "human_pronunciation": rating.pronunciation, "human_fluency": rating.fluency, "human_comprehensibility": rating.comprehensibility})
+        else:
+            rows.append({**base, "human_rater_id": "", "human_pronunciation": "", "human_fluency": "", "human_comprehensibility": ""})
+    return rows
+
+
+@router.get("/exports/analysis-ready-long")
+def export_analysis_ready_long(db: Session = Depends(get_db)):
+    return _write_csv(db, "analysis_ready_long", _analysis_ready_rows(db))
+
+
+@router.get("/exports/analysis-ready-wide")
+def export_analysis_ready_wide(db: Session = Depends(get_db)):
+    rows_by_key = {}
+    for row in _analysis_ready_rows(db):
+        key = row["participant_code_anonymized"]
+        session_key = row["session_type"] or "session"
+        base = rows_by_key.setdefault(key, {"participant_code_anonymized": key, "condition_group": row["condition_group"], "class_id": row["class_id"], "proficiency_level": row["proficiency_level"]})
+        prefix = "%s_task_%s_attempt_%s" % (session_key, row["task_id"], row["attempt_number"])
+        base[prefix + "_score"] = row["automatic_overall_score"]
+        base[prefix + "_valid_audio"] = row["valid_audio"]
+        base[prefix + "_uptake_state"] = row["uptake_state"]
+    return _write_csv(db, "analysis_ready_wide", list(rows_by_key.values()))
 
 
 @router.get("/exports/diagnosis-records")
@@ -1799,11 +2385,22 @@ def export_full(db: Session = Depends(get_db)):
             "tts_voice": getattr(task, "tts_voice", "browser-default"),
         } for task in db.query(Task).all()],
         "attempts.csv": attempts_rows,
+        "audio_files.csv": [clean_model(row) for row in db.query(AudioFile).all()],
+        "pronunciation_assessment_results.csv": [clean_model(row) for row in db.query(PronunciationAssessmentResult).all()],
+        "word_level_results.csv": [clean_model(row) for row in db.query(WordLevelAssessment).all()],
+        "phoneme_level_results.csv": [clean_model(row) for row in db.query(PhonemeLevelAssessment).all()],
         "pronunciation_evidence.csv": [clean_model(row) for row in db.query(PronunciationEvidence).all()],
         "diagnosis_records.csv": [clean_model(row) for row in db.query(DiagnosisRecord).all()],
         "ai_feedback.csv": ai_rows,
+        "feedback_events.csv": [clean_model(row) for row in db.query(FeedbackEvent).all()],
+        "feedback_uptake_states.csv": [clean_model(row) for row in db.query(FeedbackUptakeState).all()],
         "teacher_feedback.csv": [clean_model(row) for row in db.query(TeacherFeedback).all()],
         "peer_feedback.csv": [clean_model(row) for row in db.query(PeerFeedback).all()],
+        "human_ratings.csv": [clean_model(row) for row in db.query(HumanRating).all()],
+        "questionnaire_responses.csv": [clean_model(row) for row in db.query(QuestionnaireResponse).all()],
+        "consent_records.csv": [clean_model(row) for row in db.query(ConsentRecord).all()],
+        "audit_log.csv": [clean_model(row) for row in db.query(AuditLog).all()],
+        "analysis_ready_long.csv": _analysis_ready_rows(db),
         "feedback_views.csv": view_rows,
         "revision_events.csv": revision_rows,
         "learner_states.csv": [clean_model(s) for s in db.query(LearnerState).all()],

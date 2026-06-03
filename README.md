@@ -322,6 +322,45 @@ For G0/G1/G2/G3 analysis:
 
 The automatic score is an interpretable practice indicator, not a validated proficiency score. Human expert ratings are required for final learning-outcome claims.
 
+## Research-Ready Backend Additions
+
+Formal data collection requires the FastAPI backend. GitHub Pages alone is demo-only unless `VITE_API_BASE` points to a deployed backend and `/api/health` succeeds.
+
+Backend environment variables:
+
+- `DATABASE_URL`: optional PostgreSQL URL; SQLite is used when omitted.
+- `DATA_DIR`, `AUDIO_STORAGE_PATH`, `EXPORT_STORAGE_PATH`: storage locations.
+- `FRONTEND_ORIGINS`: comma-separated CORS allowlist.
+- `API_BASE_URL`: public backend URL.
+- `RESEARCH_MODE`: set `true` for formal collection.
+- `PRONUNCIATION_PROVIDER`: `mock`, `external_import`, `azure_pronunciation`, or `disabled`.
+- `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`: required for Azure Pronunciation Assessment.
+
+Research endpoints:
+
+- `GET /api/health`: backend, database, storage, provider, version, and study lock status.
+- `GET /api/pilot-readiness`: collection-readiness checks.
+- `POST /api/feedback-events`: explicit feedback-use event logging.
+- `GET /api/human-ratings/queue`: blinded rating queue.
+- `POST /api/human-ratings`: human rating submission.
+- `POST /api/questionnaire-responses`: lightweight questionnaire response logging.
+- `POST /api/consent-records`: consent and withdrawal recording.
+
+Additional research exports:
+
+- `pronunciation_assessment_results.csv`
+- `word_level_results.csv`
+- `phoneme_level_results.csv`
+- `feedback_events.csv`
+- `feedback_uptake_states.csv`
+- `human_ratings.csv`
+- `questionnaire_responses.csv`
+- `audit_log.csv`
+- `analysis_ready_long.csv`
+- `analysis_ready_wide.csv`
+
+See `DEPLOYMENT.md`, `RESEARCH_WORKFLOW.md`, `PRONUNCIATION_ASSESSMENT.md`, `EXPORT_SCHEMA.md`, `ETHICS_AND_PRIVACY.md`, and `PILOT_CHECKLIST.md`.
+
 ## Tests
 
 ```powershell

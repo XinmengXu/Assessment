@@ -133,3 +133,28 @@ This prototype exports CSV files from `data/exports`.
 
 - `studies.locked`: when true, study-critical edits are rejected.
 - `attempts.system_version_id`: version active when an attempt was created.
+
+## Research-Grade Tables
+
+- `study_versions`: snapshots task/condition/provider configuration for reproducibility.
+- `audio_files`: uploaded recording storage path, original filename, content type, file size, validity, and invalid reasons.
+- `pronunciation_assessment_results`: provider-normalized sentence-level scores and raw provider response.
+- `word_level_assessments`: word-level provider evidence when available.
+- `phoneme_level_assessments`: phoneme-level provider evidence when available.
+- `feedback_events`: generated, visible, opened, replayed, guidance-clicked, and revision-submitted events.
+- `feedback_uptake_states`: computed F0-F4 uptake state and rules.
+- `human_ratings`: blinded rater scores and confidence.
+- `questionnaire_responses`: long-format questionnaire answers.
+- `consent_records`: consent version, consent status, and withdrawal request.
+- `export_jobs`: generated export metadata.
+- `audit_log`: locked-study changes and admin changes with reasons.
+
+## Attempt Research Fields
+
+- `study_version_id`, `task_code`, `session_id`, `session_type`: experimental linkage.
+- `recording_start_time`, `recording_end_time`, `submitted_at`: timing fields.
+- `audio_duration`, `valid_audio`, `invalid_audio_reason`: recording validity.
+- `assessment_provider`, `assessment_status`, `overall_score`, `accuracy_score`, `fluency_score`, `completeness_score`, `prosody_score`: pronunciation assessment fields.
+- `feedback_displayed_to_learner`, `feedback_viewed`, `feedback_view_time`: feedback exposure.
+- `next_attempt_id`, `score_delta_from_previous_attempt`, `target_issue_resolved`: revision analysis fields.
+- `raw_result_json`: stored provider/debug output for audit.

@@ -194,7 +194,7 @@ function LoginPanel({ onLogin, error }: { onLogin: (userCode: string) => void; e
 }
 
 function BackendStatusBanner({ status }: { status: BackendStatus }) {
-  if (status.mode === "real") return <div className="status-banner real-api">Backend connected: real API mode. ASR adapter: {status.asr_adapter}</div>;
+  if (status.mode === "real") return <div className="status-banner real-api">Backend connected: real API mode. ASR adapter: {status.asr_adapter}. Pronunciation provider: {status.pronunciation_provider || "unknown"}</div>;
   if (status.mode === "checking") return <div className="status-banner checking">Checking backend connection at {status.api_base}</div>;
   return <div className="demo-banner">Demo mode: no real backend connected. Scores are simulated practice scores only. Audio is accepted only for interface testing. {status.reason}</div>;
 }

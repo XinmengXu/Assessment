@@ -6,6 +6,8 @@ export type BackendStatus = {
   backend_connected: boolean;
   api_base: string;
   asr_adapter: string;
+  pronunciation_provider?: string;
+  provider_research_usable?: boolean;
   mock_mode?: boolean;
   status?: string;
   reason?: string;
@@ -72,6 +74,9 @@ export type Attempt = {
   audio_path?: string;
   audio_url?: string;
   asr_adapter?: string;
+  assessment_provider?: string;
+  assessment_status?: string;
+  pronunciation_provider?: string;
   asr_transcript: string;
   duration_seconds: number;
   speech_rate_wpm: number;
@@ -213,6 +218,8 @@ export async function checkBackendHealth(force = false): Promise<BackendStatus> 
         api_base: API_BASE,
         status: String(health.status || "ok"),
         asr_adapter: String(health.asr_adapter || (health.mock_mode ? "mock" : "unknown")),
+        pronunciation_provider: String(health.pronunciation_provider || health.provider?.provider_name || "unknown"),
+        provider_research_usable: Boolean(health.provider_research_usable || health.provider?.research_usable),
         mock_mode: Boolean(health.mock_mode),
       };
       return backendStatus;
@@ -229,7 +236,7 @@ export function getBackendStatus() {
 }
 
 export function backendModeLabel() {
-  if (backendStatus.mode === "real") return `Backend connected: real API mode. ASR adapter: ${backendStatus.asr_adapter}`;
+  if (backendStatus.mode === "real") return `Backend connected: real API mode. ASR adapter: ${backendStatus.asr_adapter}. Pronunciation provider: ${backendStatus.pronunciation_provider || "unknown"}`;
   if (backendStatus.mode === "checking") return `Checking backend at ${API_BASE}`;
   return `Demo mode: no real backend connected. ${backendStatus.reason || ""}`;
 }
@@ -400,6 +407,9 @@ function analyzeAttempt(init: RequestInit) {
     attempt_number: previousForTask.length + 1,
     audio_path: "browser-local-demo",
     asr_adapter: "demo_no_asr",
+    assessment_provider: "demo_no_pronunciation_assessment",
+    assessment_status: "simulated",
+    pronunciation_provider: "demo_no_pronunciation_assessment",
     asr_transcript: transcript,
     duration_seconds: Math.round(duration * 100) / 100,
     speech_rate_wpm: speechRate,

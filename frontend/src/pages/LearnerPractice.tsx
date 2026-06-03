@@ -267,6 +267,8 @@ function DebugPanel({ attempt, audioBlob, audioName }: { attempt: Attempt | null
         <Metric label="File size" value={audioBlob ? `${audioBlob.size} bytes` : "0 bytes"} />
         <Metric label="Backend" value={status.backend_connected ? "connected" : "demo/local"} />
         <Metric label="ASR adapter" value={attempt?.asr_adapter || status.asr_adapter || "unknown"} />
+        <Metric label="Pronunciation provider" value={String(attempt?.assessment_provider || status.pronunciation_provider || "unknown")} />
+        <Metric label="Valid audio" value={attempt ? String(attempt.valid_audio !== false) : "not submitted"} />
       </div>
       <div className="feedback-box">
         <strong>ASR transcript</strong>
