@@ -189,7 +189,7 @@ function LoginPanel({ onLogin, error }: { onLogin: (userCode: string) => void; e
       <div className="section-head">
         <div>
           <h2>Speech-AI Formative Speaking Practice Platform</h2>
-          <p>Enter your pilot user code. Example accounts: student001, teacher001, peer001, admin001.</p>
+          <p>Enter your pilot user code. Example accounts: student001, teacher001, peer001, rater001, admin001.</p>
         </div>
       </div>
       <label>User code<input value={userCode} onChange={(event) => setUserCode(event.target.value)} /></label>
