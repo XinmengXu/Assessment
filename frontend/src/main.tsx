@@ -26,6 +26,7 @@ type Page =
   | "class-summary"
   | "peer-tasks"
   | "submitted-reviews"
+  | "human-rating"
   | "study-setup"
   | "task-bank"
   | "users-groups"
@@ -36,6 +37,7 @@ const DEFAULT_PAGE: Record<UserRole, Page> = {
   student: "practice",
   teacher: "student-list",
   peer_reviewer: "peer-tasks",
+  rater: "human-rating",
   researcher_admin: "study-setup",
 };
 
@@ -53,6 +55,9 @@ const roleNav = {
   peer_reviewer: [
     ["peer-tasks", ClipboardCheck, "Peer Review Tasks"],
     ["submitted-reviews", ClipboardList, "Submitted Reviews"],
+  ],
+  rater: [
+    ["human-rating", ClipboardCheck, "Blinded Rating"],
   ],
   researcher_admin: [
     ["study-setup", ShieldCheck, "Study Setup"],
@@ -166,6 +171,7 @@ function App() {
         {page === "class-summary" && <ClassSummary user={user} />}
         {page === "peer-tasks" && <PeerReviewTasks user={user} />}
         {page === "submitted-reviews" && <SubmittedReviews user={user} />}
+        {page === "human-rating" && <HumanRatingPage user={user} />}
         {page === "study-setup" && <StudyDesign />}
         {page === "task-bank" && <TaskManagement tasks={tasks} onTasks={setTasks} />}
         {page === "users-groups" && <UsersAndGroups />}
@@ -414,6 +420,70 @@ function SubmittedReviews({ user }: { user: PilotUser }) {
   return <SimpleRecordList title="Submitted Reviews" rows={rows} empty="Submitted peer reviews will appear here." />;
 }
 
+function HumanRatingPage({ user }: { user: PilotUser }) {
+  const [queue, setQueue] = useState<Record<string, unknown>[]>([]);
+  const [selected, setSelected] = useState<Record<string, unknown> | null>(null);
+  const [startedAt, setStartedAt] = useState(new Date().toISOString());
+  const [ratings, setRatings] = useState({ pronunciation: 3, fluency: 3, intelligibility: 3, comprehensibility: 3, task_completion: 3, overall_quality: 3, rating_confidence: 0.8 });
+  const [comments, setComments] = useState("");
+  const [unusable, setUnusable] = useState(false);
+  const [saved, setSaved] = useState("");
+  function load() {
+    api<Record<string, unknown>[]>(`/human-ratings/queue?rater_id=${encodeURIComponent(user.user_code)}&include_intervention=true`).then((items) => {
+      setQueue(items);
+      setSelected(items[0] || null);
+      setStartedAt(new Date().toISOString());
+    });
+  }
+  useEffect(load, [user.user_code]);
+  async function submit() {
+    if (!selected) return;
+    const duration = Math.max(0, Math.round((Date.now() - new Date(startedAt).getTime()) / 1000));
+    await api("/human-ratings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        attempt_id: selected.attempt_id,
+        rater_id: user.user_code,
+        rubric_version: "rubric_v1",
+        ...ratings,
+        comments,
+        unusable_recording: unusable,
+        rating_started_at: startedAt,
+        rating_duration_seconds: duration,
+      }),
+    });
+    setSaved("Rating submitted");
+    setComments("");
+    setUnusable(false);
+    load();
+  }
+  return (
+    <section className="stack">
+      <div className="panel">
+        <h2>Blinded Rating</h2>
+        <p className="muted">Recordings are anonymized. Experimental condition and automatic scores are hidden.</p>
+      </div>
+      {!selected ? <div className="panel"><p className="muted">No recordings in the rating queue.</p></div> : (
+        <article className="panel">
+          <label>Recording<select value={String(selected.attempt_id)} onChange={(event) => { const next = queue.find((item) => String(item.attempt_id) === event.target.value) || null; setSelected(next); setStartedAt(new Date().toISOString()); }}>{queue.map((item) => <option value={String(item.attempt_id)} key={String(item.attempt_id)}>{String(item.anonymized_participant_id)} - {String(item.session_type)} - Task {String(item.task_code || item.task_id)}</option>)}</select></label>
+          <p className="pill">{String(selected.anonymized_participant_id)} / {String(selected.session_type)} / Attempt {String(selected.attempt_number)}</p>
+          <audio controls src={apiAssetUrl(String(selected.audio_url || ""))} />
+          <div className="metrics-grid">
+            {Object.entries(ratings).map(([key, value]) => (
+              <label key={key}>{key.replace(/_/g, " ")}<input type="number" min={key === "rating_confidence" ? 0 : 1} max={key === "rating_confidence" ? 1 : 5} step={key === "rating_confidence" ? 0.1 : 1} value={value} onChange={(event) => setRatings({ ...ratings, [key]: Number(event.target.value) })} /></label>
+            ))}
+          </div>
+          <label className="check-row"><input type="checkbox" checked={unusable} onChange={(event) => setUnusable(event.target.checked)} /> Flag unusable recording</label>
+          <label>Optional comment<textarea value={comments} onChange={(event) => setComments(event.target.value)} /></label>
+          <button className="primary submit" onClick={submit}>Submit rating</button>
+          {saved && <span className="status-text">{saved}</span>}
+        </article>
+      )}
+    </section>
+  );
+}
+
 function UsersAndGroups() {
   const [users, setUsers] = useState<PilotUser[]>([]);
   const [saved, setSaved] = useState("");
@@ -452,7 +522,7 @@ function UsersAndGroups() {
 }
 
 function DataExport() {
-  const exports = ["users", "classes", "groups", "tasks", "tts-audio-status", "attempts", "ai-feedback", "teacher-feedback", "peer-feedback", "feedback-views", "revisions", "learner-progress", "teacher-orchestration-events", "peer-review-assignments", "all"];
+  const exports = ["participants", "group-assignments", "tasks", "sessions", "attempts", "pronunciation-assessment-results", "word-level-results", "phoneme-level-results", "feedback", "feedback-events", "feedback-uptake-states", "human-ratings", "questionnaire-responses", "audit-log", "analysis-ready-long", "analysis-ready-wide", "users", "classes", "groups", "tts-audio-status", "teacher-feedback", "peer-feedback", "feedback-views", "revisions", "learner-progress", "teacher-orchestration-events", "peer-review-assignments", "all"];
   return (
     <section className="panel">
       <h2>Data Export</h2>
@@ -500,6 +570,7 @@ function TtsButtons({ sentence, focusWords }: { sentence: string; focusWords: st
 }
 
 function roleLabel(role: UserRole) {
+  if (role === "rater") return "Blinded rater";
   return role === "peer_reviewer" ? "Peer reviewer" : role === "researcher_admin" ? "Researcher admin" : role[0].toUpperCase() + role.slice(1);
 }
 

@@ -155,6 +155,10 @@ This prototype exports CSV files from `data/exports`.
 - `recording_start_time`, `recording_end_time`, `submitted_at`: timing fields.
 - `audio_duration`, `valid_audio`, `invalid_audio_reason`: recording validity.
 - `assessment_provider`, `assessment_status`, `overall_score`, `accuracy_score`, `fluency_score`, `completeness_score`, `prosody_score`: pronunciation assessment fields.
+- `practice_clarity_score`, `practice_clarity_score_source`: low-stakes heuristic practice indicator and source.
+- `pronunciation_assessment_score`, `pronunciation_assessment_score_source`: score returned by a real or imported pronunciation assessment provider and its source.
+- `pronunciation_score_valid_for_research`: true only for model-supported or human-validated pronunciation evidence.
+- `evidence_level`: `practice_indicator`, `asr_supported_cue`, `model_supported_diagnosis`, or `human_validated_diagnosis`.
 - `feedback_displayed_to_learner`, `feedback_viewed`, `feedback_view_time`: feedback exposure.
 - `next_attempt_id`, `score_delta_from_previous_attempt`, `target_issue_resolved`: revision analysis fields.
 - `raw_result_json`: stored provider/debug output for audit.

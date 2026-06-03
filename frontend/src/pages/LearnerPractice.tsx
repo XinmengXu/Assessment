@@ -202,7 +202,8 @@ function FeedbackPanel({ attempt, groupId }: { attempt: Attempt | null; groupId:
     );
   }
   const feedback = attempt.feedback;
-  const scoreText = String(feedback.practice_score ?? feedback.overall_score ?? "N/A");
+  const scoreText = String(feedback.pronunciation_assessment_score ?? feedback.practice_score ?? feedback.overall_score ?? "N/A");
+  const scoreLabel = String(feedback.score_label || (feedback.pronunciation_assessment_score !== null && feedback.pronunciation_assessment_score !== undefined ? "Pronunciation assessment score" : "Practice clarity indicator"));
   const commentText = String(feedback.comment ?? "");
   const showScore = Boolean(feedback.show_score || attempt.show_score);
   const showComment = Boolean(feedback.show_comment || attempt.show_comment);
@@ -212,7 +213,7 @@ function FeedbackPanel({ attempt, groupId }: { attempt: Attempt | null; groupId:
         {scoreText}
       </div> : null}
       <h2>Automated Feedback</h2>
-      <p className="small-note">Practice clarity score, not a validated speaking proficiency score.</p>
+      <p className="small-note">{scoreLabel}. This is learning support, not a high-stakes speaking proficiency score.</p>
       {feedback.demo_notice ? <div className="demo-inline">{String(feedback.demo_notice)}</div> : null}
       {feedback.workflow_request ? <div className="feedback-box"><strong>Review request</strong><p>{String(feedback.workflow_request_label || "This attempt has been sent for additional review.")}</p></div> : null}
       {attempt.asr_transcript ? (
@@ -225,7 +226,7 @@ function FeedbackPanel({ attempt, groupId }: { attempt: Attempt | null; groupId:
       <div className="metrics-grid">
         <Metric label="Duration" value={`${attempt.duration_seconds}s`} />
         <Metric label="Speech rate" value={`${attempt.speech_rate_wpm} wpm`} />
-        {showScore ? <Metric label={feedback.simulated ? "Simulated practice score" : "Practice clarity score"} value={scoreText} /> : null}
+        {showScore ? <Metric label={feedback.simulated ? "Simulated practice score" : scoreLabel} value={scoreText} /> : null}
         <Metric label="Word match" value={`${attempt.word_match_score}%`} />
         <Metric label="Long pauses" value={attempt.long_pause_count} />
       </div>

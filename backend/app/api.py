@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import json
 import shutil
 import zipfile
@@ -98,7 +99,17 @@ def _json(value, default):
 
 def _anonymized_code(value):
     text = str(value or "")
-    return "P%06d" % (abs(hash(text)) % 1000000)
+    digest = hashlib.sha256(("assessment:" + text).encode("utf-8")).hexdigest()
+    return "P" + digest[:10].upper()
+
+
+def _participant_anonymous_code(participant_or_id):
+    if hasattr(participant_or_id, "participant_id"):
+        participant = participant_or_id
+        if not getattr(participant, "anonymous_code", ""):
+            participant.anonymous_code = _anonymized_code(participant.participant_id)
+        return participant.anonymous_code
+    return _anonymized_code(participant_or_id)
 
 
 def _storage_status(path):
@@ -219,22 +230,51 @@ def _log_feedback_event(db, participant_id, study_id, task_id, attempt_id, event
 
 
 def _compute_feedback_uptake(db, participant_id, task_id, attempt_id):
+    attempt = db.query(Attempt).filter(Attempt.id == attempt_id).first()
+    feedback_item = db.query(FeedbackItem).filter(FeedbackItem.attempt_id == attempt_id).order_by(FeedbackItem.id.desc()).first()
+    events = db.query(FeedbackEvent).filter(FeedbackEvent.attempt_id == attempt_id).all()
     viewed = db.query(FeedbackEvent).filter(
         FeedbackEvent.attempt_id == attempt_id,
         FeedbackEvent.event_type.in_(["learner_opened_feedback", "feedback_visible_to_learner"]),
     ).count() > 0 or db.query(FeedbackView).filter(FeedbackView.attempt_id == attempt_id).count() > 0
     revision = db.query(RevisionEvent).filter(RevisionEvent.previous_attempt_id == attempt_id).first()
     improved = bool(revision and (revision.score_delta > 0 or revision.word_match_delta > 0))
+    later_attempt = None
     sustained = False
+    if revision:
+        later_attempt = db.query(Attempt).filter(
+            Attempt.participant_id == participant_id,
+            Attempt.id != revision.new_attempt_id,
+            Attempt.created_at > revision.created_at,
+            Attempt.score_delta_from_previous_attempt >= 0,
+            Attempt.valid_audio == True,  # noqa: E712
+        ).order_by(Attempt.created_at.asc()).first()
+        sustained = bool(improved and later_attempt)
     state = derive_feedback_use_state(viewed, revision is not None, improved, sustained)
-    rules = {"viewed": viewed, "has_revision": revision is not None, "improved": improved, "sustained": sustained}
+    evidence = {
+        "events": [event.event_type for event in events],
+        "feedback_view_duration_ms": sum(event.duration_ms_optional or 0 for event in events if event.event_type == "learner_opened_feedback"),
+        "feedback_view_rows": db.query(FeedbackView).filter(FeedbackView.attempt_id == attempt_id).count(),
+        "revision_event_id": revision.id if revision else 0,
+    }
+    rules = {"rule_version": "uptake_rules_v1", "viewed": viewed, "has_revision": revision is not None, "improved": improved, "sustained": sustained}
     row = db.query(FeedbackUptakeState).filter(FeedbackUptakeState.attempt_id == attempt_id).first()
     if not row:
         row = FeedbackUptakeState(participant_id=participant_id, task_id=task_id, attempt_id=attempt_id)
         db.add(row)
+    row.feedback_item_id = feedback_item.id if feedback_item else 0
     row.uptake_state = state
+    row.rule_version = "uptake_rules_v1"
+    row.evidence_used = json.dumps(evidence)
+    row.previous_attempt_id = attempt_id
+    row.revised_attempt_id = revision.new_attempt_id if revision else 0
+    row.later_attempt_id = later_attempt.id if later_attempt else 0
+    row.score_delta = revision.score_delta if revision else 0
+    row.target_issue_resolved = bool(revision.repeated_issue_reduced if revision else False)
     row.rules_json = json.dumps(rules)
     row.computed_at = datetime.utcnow()
+    if attempt:
+        attempt.feedback_viewed = viewed
     return row
 
 
@@ -307,6 +347,12 @@ def _attempt_to_dict(db, attempt, base_score=None):
         "speech_rate_wpm": attempt.speech_rate_wpm,
         "word_match_score": attempt.word_match_score,
         "assessment_score": attempt.assessment_score,
+        "practice_clarity_score": getattr(attempt, "practice_clarity_score", None),
+        "practice_clarity_score_source": getattr(attempt, "practice_clarity_score_source", ""),
+        "pronunciation_assessment_score": getattr(attempt, "pronunciation_assessment_score", None),
+        "pronunciation_assessment_score_source": getattr(attempt, "pronunciation_assessment_score_source", ""),
+        "pronunciation_score_valid_for_research": bool(getattr(attempt, "pronunciation_score_valid_for_research", False)),
+        "evidence_level": getattr(attempt, "evidence_level", ""),
         "missing_words": _json(attempt.missing_words_json, "[]"),
         "substitutions": _json(attempt.substitutions_json, "[]"),
         "issue_types_detected": _json(attempt.issue_types_detected_json, "[]"),
@@ -333,6 +379,10 @@ def _attempt_to_dict(db, attempt, base_score=None):
             "asr_sanity": _json(getattr(attempt, "asr_sanity_json", "{}"), "{}"),
             "assessment_provider": getattr(attempt, "assessment_provider", ""),
             "assessment_status": getattr(attempt, "assessment_status", ""),
+            "practice_clarity_score": getattr(attempt, "practice_clarity_score", None),
+            "pronunciation_assessment_score": getattr(attempt, "pronunciation_assessment_score", None),
+            "pronunciation_score_valid_for_research": bool(getattr(attempt, "pronunciation_score_valid_for_research", False)),
+            "evidence_level": getattr(attempt, "evidence_level", ""),
             "valid_audio": bool(getattr(attempt, "valid_audio", True)),
             "invalid_reasons": feedback.get("invalid_reasons", []),
             "score_breakdown": _json(getattr(attempt, "score_breakdown_json", "{}"), "{}"),
@@ -577,7 +627,7 @@ def create_user(payload: dict, db: Session = Depends(get_db)):
     role = (payload or {}).get("role", "student").strip()
     if not user_code:
         raise HTTPException(status_code=400, detail="user_code is required")
-    if role not in ["student", "teacher", "peer_reviewer", "researcher_admin"]:
+    if role not in ["student", "teacher", "peer_reviewer", "rater", "researcher_admin"]:
         raise HTTPException(status_code=400, detail="Unknown role")
     user = db.query(User).filter(User.user_code == user_code).first()
     if not user:
@@ -597,6 +647,7 @@ def create_user(payload: dict, db: Session = Depends(get_db)):
         if not participant:
             participant = Participant(participant_id=user.user_code, participant_code=user.user_code, class_id=str(user.class_id))
             db.add(participant)
+        participant.anonymous_code = participant.anonymous_code or _participant_anonymous_code(participant)
         participant.group_id = condition_group
         participant.group_label = condition.condition_name if condition else condition_group
         participant.condition_id = condition.id if condition else 4
@@ -946,28 +997,49 @@ def system_status(db: Session = Depends(get_db)):
 def pilot_readiness(db: Session = Depends(get_db)):
     provider = provider_status(db)
     studies = db.query(Study).count()
+    study_versions = db.query(StudyVersion).count()
+    locked_studies = db.query(Study).filter(Study.locked == True).count()  # noqa: E712
     conditions = {row.condition_code for row in db.query(Condition).all()}
     participants_assigned = db.query(Participant).filter(Participant.group_id.in_(["G0", "G1", "G2", "G3"])).count()
+    randomized_groups = {row.group_id for row in db.query(Participant).filter(Participant.group_id.in_(["G0", "G1", "G2", "G3"])).all()}
     tasks = db.query(Task).filter(Task.active == True).count()  # noqa: E712
+    consent_enabled = db.query(ConsentRecord).count() > 0
+    human_rubric_ready = True
+    analysis_ready_available = True
+    def check(name, ok, warning=False, critical=True, message=""):
+        status = "PASS" if ok else ("WARNING" if warning else "FAIL")
+        return {"check": name, "status": status, "ok": ok, "critical": critical, "message": message}
     checks = [
-        {"check": "backend_connected", "ok": True},
-        {"check": "database_writable", "ok": _database_status(db)["connected"]},
-        {"check": "audio_directory_writable", "ok": _storage_status(AUDIO_DIR)["writable"]},
-        {"check": "export_directory_writable", "ok": _storage_status(EXPORT_DIR)["writable"]},
-        {"check": "pronunciation_provider_configured", "ok": bool(provider.get("configured"))},
-        {"check": "pronunciation_provider_research_usable", "ok": bool(provider.get("research_usable")) or not RESEARCH_MODE},
-        {"check": "at_least_one_study_exists", "ok": studies > 0},
-        {"check": "g0_g3_conditions_exist", "ok": {"G0", "G1", "G2", "G3"}.issubset(conditions)},
-        {"check": "participants_assigned", "ok": participants_assigned > 0},
-        {"check": "tasks_assigned", "ok": tasks > 0},
-        {"check": "model_audio_or_browser_fallback", "ok": True},
-        {"check": "no_demo_mode_in_research_collection", "ok": not (RESEARCH_MODE and provider.get("provider_name") == "mock")},
+        check("backend_connected", True),
+        check("database_writable", _database_status(db)["connected"]),
+        check("audio_storage_writable", _storage_status(AUDIO_DIR)["writable"]),
+        check("export_path_writable", _storage_status(EXPORT_DIR)["writable"]),
+        check("real_pronunciation_provider_configured", bool(provider.get("research_usable")), warning=bool(provider.get("configured")) and not RESEARCH_MODE, message="Mock/external UI mode is acceptable for interface pilots, but not formal collection."),
+        check("mock_provider_disabled_in_research_mode", not (RESEARCH_MODE and provider.get("provider_name") == "mock")),
+        check("g0_g3_conditions_configured", {"G0", "G1", "G2", "G3"}.issubset(conditions)),
+        check("study_created", studies > 0),
+        check("study_version_created", study_versions > 0, warning=studies > 0, message="Create a study version before formal data collection."),
+        check("tasks_assigned", tasks > 0),
+        check("participants_imported", participants_assigned > 0),
+        check("participants_randomized", {"G0", "G1", "G2", "G3"}.issubset(randomized_groups), warning=participants_assigned > 0, message="Balanced G0-G3 assignment is recommended before locking."),
+        check("model_audio_available", True, warning=True, critical=False, message="Browser TTS fallback is available; uploaded model audio is stronger for controlled studies."),
+        check("study_locked", locked_studies > 0, warning=studies > 0, message="Lock the study before formal collection."),
+        check("consent_records_enabled", consent_enabled, warning=True, message="Create at least one consent record or verify consent workflow before collection."),
+        check("human_rating_rubric_configured", human_rubric_ready),
+        check("analysis_ready_export_available", analysis_ready_available),
+        check("demo_mode_disabled_for_research_collection", RESEARCH_MODE and provider.get("provider_name") != "mock", warning=not RESEARCH_MODE, message="Set RESEARCH_MODE=true with a real provider for formal collection."),
     ]
+    critical_failures = [item for item in checks if item["critical"] and item["status"] == "FAIL"]
+    warnings = [item for item in checks if item["status"] == "WARNING"]
     return {
-        "ready": all(item["ok"] for item in checks),
+        "ready": not critical_failures,
+        "ready_for_formal_data_collection": not critical_failures and not warnings,
+        "overall_status": "FAIL" if critical_failures else ("WARNING" if warnings else "PASS"),
         "research_mode": RESEARCH_MODE,
         "provider": provider,
         "checks": checks,
+        "critical_failures": critical_failures,
+        "warnings": warnings,
     }
 
 
@@ -1009,7 +1081,7 @@ def human_rating_queue(rater_id: str = "", include_intervention: bool = False, d
             continue
         rows.append({
             "attempt_id": attempt.id,
-            "anonymized_participant_id": _anonymized_code(attempt.participant_id),
+            "anonymized_participant_id": _participant_anonymous_code(attempt.participant_id),
             "task_id": attempt.task_id,
             "task_code": getattr(attempt, "task_code", ""),
             "session_type": session_type,
@@ -1025,9 +1097,11 @@ def create_human_rating(payload: dict, db: Session = Depends(get_db)):
     if not attempt:
         raise HTTPException(status_code=404, detail="Attempt not found")
     row = HumanRating(
+        study_id=attempt.study_id,
         attempt_id=attempt.id,
-        anonymized_participant_id=_anonymized_code(attempt.participant_id),
+        anonymized_participant_id=_participant_anonymous_code(attempt.participant_id),
         task_id=attempt.task_id,
+        task_code=getattr(attempt, "task_code", ""),
         session_type=getattr(attempt, "session_type", ""),
         rater_id=payload.get("rater_id", ""),
         rubric_version=payload.get("rubric_version", "rubric_v1"),
@@ -1041,6 +1115,8 @@ def create_human_rating(payload: dict, db: Session = Depends(get_db)):
         unusable_recording=bool(payload.get("unusable_recording", False)),
         comments=payload.get("comments", ""),
         rating_duration_seconds=float(payload.get("rating_duration_seconds") or 0),
+        rating_started_at=datetime.fromisoformat(payload["rating_started_at"]) if payload.get("rating_started_at") else None,
+        rating_submitted_at=datetime.utcnow(),
     )
     db.add(row)
     db.commit()
@@ -1082,6 +1158,7 @@ def create_consent_record(payload: dict, db: Session = Depends(get_db)):
         if participant:
             participant.withdrawn = True
             participant.withdrawal_reason_optional = payload.get("withdrawal_reason_optional", "")
+            participant.withdrawal_timestamp = datetime.utcnow()
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -1096,6 +1173,7 @@ def create_participant(payload: ParticipantCreate, db: Session = Depends(get_db)
     if participant:
         participant.group_id = condition_key
         participant.participant_code = payload.participant_id
+        participant.anonymous_code = participant.anonymous_code or _participant_anonymous_code(participant)
         participant.study_id = payload.study_id
         participant.condition_id = condition.id if condition else payload.condition_id
         participant.session_id = payload.session_id or participant.session_id
@@ -1103,6 +1181,7 @@ def create_participant(payload: ParticipantCreate, db: Session = Depends(get_db)
         participant = Participant(
             participant_id=payload.participant_id,
             participant_code=payload.participant_id,
+            anonymous_code=_anonymized_code(payload.participant_id),
             study_id=payload.study_id,
             condition_id=condition.id if condition else payload.condition_id,
             group_id=condition_key,
@@ -1194,6 +1273,67 @@ def create_study_version(study_id: int, payload: dict = None, db: Session = Depe
     db.commit()
     db.refresh(version)
     return clean_model(version)
+
+
+@router.post("/studies/{study_id}/task-sets")
+def create_task_set(study_id: int, payload: dict, db: Session = Depends(get_db)):
+    _ensure_unlocked_study(db, study_id)
+    row = TaskSet(
+        study_id=study_id,
+        task_set_code=payload.get("task_set_code", "task_set_%s" % (db.query(TaskSet).count() + 1)),
+        task_ids_json=json.dumps(payload.get("task_ids", [])),
+        description=payload.get("description", ""),
+    )
+    db.add(row)
+    _audit(db, "task_set_created", "study", study_id, after={"task_set_code": row.task_set_code})
+    db.commit()
+    db.refresh(row)
+    return clean_model(row)
+
+
+@router.post("/studies/{study_id}/sessions")
+def create_research_session(study_id: int, payload: dict, db: Session = Depends(get_db)):
+    _ensure_unlocked_study(db, study_id)
+    session_type = payload.get("session_type", "practice_intervention")
+    if session_type not in ["familiarization", "pre_test", "practice_intervention", "immediate_post_test", "delayed_post_test", "backup_task"]:
+        raise HTTPException(status_code=400, detail="Unknown session_type")
+    row = ResearchSession(
+        study_id=study_id,
+        session_code=payload.get("session_code", session_type),
+        session_type=session_type,
+        display_order=int(payload.get("display_order", 0) or 0),
+        task_set_id=int(payload.get("task_set_id", 0) or 0),
+        active=bool(payload.get("active", True)),
+    )
+    db.add(row)
+    _audit(db, "research_session_created", "study", study_id, after={"session_code": row.session_code, "session_type": row.session_type})
+    db.commit()
+    db.refresh(row)
+    return clean_model(row)
+
+
+@router.post("/studies/{study_id}/randomize-groups")
+def randomize_groups(study_id: int, payload: dict = None, db: Session = Depends(get_db)):
+    payload = payload or {}
+    _ensure_unlocked_study(db, study_id)
+    participants = db.query(Participant).filter(Participant.study_id == study_id).order_by(Participant.class_id.asc(), Participant.participant_id.asc()).all()
+    if not participants:
+        raise HTTPException(status_code=400, detail="No participants found for study.")
+    groups = ["G0", "G1", "G2", "G3"]
+    if payload.get("stratify_by") == "class":
+        buckets = defaultdict(list)
+        for participant in participants:
+            buckets[participant.class_id].append(participant)
+        ordered = []
+        for bucket in buckets.values():
+            ordered.extend(bucket)
+        participants = ordered
+    for index, participant in enumerate(participants):
+        participant.group_id = groups[index % len(groups)]
+        participant.anonymous_code = participant.anonymous_code or _participant_anonymous_code(participant)
+    _audit(db, "participants_randomized", "study", study_id, payload.get("reason", ""), after={"count": len(participants), "groups": groups})
+    db.commit()
+    return {"ok": True, "assigned": len(participants), "groups": groups}
 
 
 @router.post("/system-version/create")
@@ -1422,9 +1562,10 @@ def analyze_attempt(
     condition = db.query(Condition).filter(Condition.condition_code == condition_key).first()
     participant = db.query(Participant).filter(Participant.participant_id == participant_id).first()
     if not participant:
-        participant = Participant(participant_id=participant_id, participant_code=participant_id, group_id=condition_key, study_id=study_id, condition_id=condition.id if condition else 4, session_id=session_id)
+        participant = Participant(participant_id=participant_id, participant_code=participant_id, anonymous_code=_anonymized_code(participant_id), group_id=condition_key, study_id=study_id, condition_id=condition.id if condition else 4, session_id=session_id)
         db.add(participant)
     else:
+        participant.anonymous_code = participant.anonymous_code or _participant_anonymous_code(participant)
         participant.group_id = condition_key
         participant.condition_id = condition.id if condition else participant.condition_id
         participant.study_id = study_id
@@ -1459,24 +1600,32 @@ def analyze_attempt(
         features["valid_audio"] = False
         features.setdefault("invalid_reasons", []).extend(asr_sanity["warnings"])
     score_result = compute_practice_score(alignment, features)
-    score = score_result["practice_score"]
+    practice_clarity_score = score_result["practice_score"]
+    display_score = practice_clarity_score
+    pronunciation_assessment_score = None
+    pronunciation_score_valid_for_research = False
+    pronunciation_score_source = ""
     provider_result = None
     if RESEARCH_MODE and PRONUNCIATION_PROVIDER in ["disabled", "mock"]:
         raise HTTPException(status_code=503, detail="Research mode requires a real pronunciation provider, not %s." % PRONUNCIATION_PROVIDER)
     if not features.get("no_speech_detected"):
         provider = get_pronunciation_provider(db=db)
         provider_result = provider.assess(audio_path, task.target_text, {"task_id": task.id, "task_code": task.task_code, "session_type": getattr(task, "session_type", "")}, participant, {
-            "practice_score": score,
+            "practice_score": practice_clarity_score,
             "fluency_proxy_score": max(0, min(100, 100 - abs(features["speech_rate_wpm"] - 120) / 2)),
             "word_match_score": alignment["word_match_score"],
             "asr_transcript": transcript,
         })
         if provider_result.status == "error" and RESEARCH_MODE:
             raise HTTPException(status_code=503, detail=provider_result.error_message)
-        if provider_result.overall_score is not None and provider_result.evidence_level != "practice_indicator":
-            score = round(float(provider_result.overall_score), 2)
+        raw_pronunciation_score = provider_result.pronunciation_score if provider_result.pronunciation_score is not None else provider_result.overall_score
+        if raw_pronunciation_score is not None and provider_result.evidence_level != "practice_indicator" and provider_result.status == "ok":
+            pronunciation_assessment_score = round(float(raw_pronunciation_score), 2)
+            pronunciation_score_valid_for_research = provider_result.evidence_level in ["model_supported_diagnosis", "human_validated_diagnosis"]
+            pronunciation_score_source = "%s:%s" % (provider_result.provider_name, provider_result.provider_version)
+            display_score = pronunciation_assessment_score
     issues = _detect_issue_types(task, alignment, features)
-    structured = generate_feedback("G3", score or 0, task.target_text, transcript, alignment, features)
+    structured = generate_feedback("G3", display_score or 0, task.target_text, transcript, alignment, features)
     target_word = _target_word_from_alignment(task, alignment)
     target_phoneme = _focus_phoneme_for_word(task, target_word)
     if target_word:
@@ -1492,7 +1641,12 @@ def analyze_attempt(
             task.speaking_target or "pronunciation_clarity",
             repeated=False,
         ))
-    structured["practice_score"] = score
+    structured["practice_score"] = display_score
+    structured["practice_clarity_score"] = practice_clarity_score
+    structured["practice_clarity_score_source"] = "heuristic_practice_indicator"
+    structured["pronunciation_assessment_score"] = pronunciation_assessment_score
+    structured["pronunciation_assessment_score_source"] = pronunciation_score_source
+    structured["pronunciation_score_valid_for_research"] = pronunciation_score_valid_for_research
     structured["score_breakdown"] = score_result["score_breakdown"]
     structured["score_note"] = score_result["score_note"]
     structured["asr_sanity"] = asr_sanity
@@ -1502,7 +1656,7 @@ def analyze_attempt(
     if provider_result and provider_result.evidence_level == "practice_indicator":
         structured["score_note"] = "Practice indicator only. Mock pronunciation assessment is not valid research evidence."
     if features.get("no_speech_detected"):
-        score = 0
+        display_score = 0
         feedback = {
             "overall_score": None,
             "practice_score": None,
@@ -1516,9 +1670,19 @@ def analyze_attempt(
             "comment": "No valid speech was detected. Please record your voice again.",
         }
     else:
-        feedback = filter_feedback_for_condition(condition_key, transcript, score, structured)
+        feedback = filter_feedback_for_condition(condition_key, transcript, display_score, structured)
+        feedback["practice_clarity_score"] = practice_clarity_score
+        feedback["practice_clarity_score_source"] = "heuristic_practice_indicator"
+        feedback["pronunciation_assessment_score"] = pronunciation_assessment_score
+        feedback["pronunciation_assessment_score_source"] = pronunciation_score_source
+        feedback["pronunciation_score_valid_for_research"] = pronunciation_score_valid_for_research
+        feedback["score_source"] = "pronunciation_assessment" if pronunciation_assessment_score is not None else "practice_clarity_indicator"
+        feedback["score_label"] = "pronunciation assessment score" if pronunciation_assessment_score is not None else "practice clarity indicator"
+        if RESEARCH_MODE and pronunciation_assessment_score is None:
+            feedback["assessment_failed"] = True
+            feedback["score_label"] = "assessment failed"
     if not task.feedback_allowed and not features.get("no_speech_detected"):
-        feedback = filter_feedback_for_condition("G0", transcript, score, structured)
+        feedback = filter_feedback_for_condition("G0", transcript, display_score, structured)
     workflow_request = (workflow_request or "").strip()
     if workflow_request in ["teacher_feedback", "peer_feedback"] and not features.get("no_speech_detected"):
         feedback["workflow_request"] = workflow_request
@@ -1546,7 +1710,13 @@ def analyze_attempt(
         audio_duration=features["duration_seconds"],
         speech_rate_wpm=features["speech_rate_wpm"],
         word_match_score=alignment["word_match_score"],
-        assessment_score=score,
+        assessment_score=display_score,
+        practice_clarity_score=practice_clarity_score,
+        practice_clarity_score_source="heuristic_practice_indicator",
+        pronunciation_assessment_score=pronunciation_assessment_score,
+        pronunciation_assessment_score_source=pronunciation_score_source,
+        pronunciation_score_valid_for_research=pronunciation_score_valid_for_research,
+        evidence_level=provider_result.evidence_level if provider_result else "asr_supported_cue",
         missing_words_json=json.dumps(alignment["missing_words"]),
         substitutions_json=json.dumps(alignment["substitutions"]),
         issue_types_detected_json=json.dumps(issues),
@@ -1557,7 +1727,7 @@ def analyze_attempt(
         invalid_audio_reason="; ".join(features.get("invalid_reasons", [])),
         assessment_provider=provider_result.provider_name if provider_result else PRONUNCIATION_PROVIDER,
         assessment_status=provider_result.status if provider_result else "not_run",
-        overall_score=provider_result.overall_score if provider_result else score,
+        overall_score=provider_result.overall_score if provider_result else None,
         accuracy_score=provider_result.accuracy_score if provider_result else None,
         fluency_score=provider_result.fluency_score if provider_result else None,
         completeness_score=provider_result.completeness_score if provider_result else None,
@@ -1670,7 +1840,7 @@ def analyze_attempt(
     if previous:
         previous.next_attempt_id = attempt.id
         previous_score = previous.assessment_score or _attempt_score(previous) or 0
-        attempt.score_delta_from_previous_attempt = (score or 0) - previous_score
+        attempt.score_delta_from_previous_attempt = (display_score or 0) - previous_score
         prev_score = previous.assessment_score or _attempt_score(previous) or 0
         repeated_issue_reduced = len(issues) < len(_json(previous.issue_types_detected_json, "[]"))
         attempt.target_issue_resolved = repeated_issue_reduced
@@ -1679,7 +1849,7 @@ def analyze_attempt(
             task_id=task_id,
             previous_attempt_id=previous.id,
             new_attempt_id=attempt.id,
-            score_delta=(score or 0) - prev_score,
+            score_delta=(display_score or 0) - prev_score,
             word_match_delta=alignment["word_match_score"] - previous.word_match_score,
             repeated_issue_reduced=repeated_issue_reduced,
             transcript_change="%s -> %s" % (previous.asr_transcript, transcript),
@@ -2059,7 +2229,40 @@ def _write_csv(db, report_type, rows):
 
 @router.get("/exports/participants")
 def export_participants(db: Session = Depends(get_db)):
-    return _write_csv(db, "participants", [clean_model(p) for p in db.query(Participant).all()])
+    rows = []
+    for participant in db.query(Participant).all():
+        rows.append({
+            "participant_code_anonymized": _participant_anonymous_code(participant),
+            "study_id": participant.study_id,
+            "condition_group": participant.group_id,
+            "class_id": participant.class_id,
+            "proficiency_level": participant.proficiency_level,
+            "withdrawn": bool(getattr(participant, "withdrawn", False)),
+            "created_at": participant.created_at,
+        })
+    return _write_csv(db, "participants", rows)
+
+
+@router.get("/exports/participants-identifiable")
+def export_participants_identifiable(admin_confirm: bool = False, db: Session = Depends(get_db)):
+    if not admin_confirm:
+        raise HTTPException(status_code=403, detail="Identifiable export requires admin_confirm=true.")
+    _audit(db, "identifiable_export_requested", "export", "participants-identifiable", "admin_confirm=true")
+    return _write_csv(db, "participants_identifiable", [clean_model(p) for p in db.query(Participant).all()])
+
+
+@router.get("/exports/group-assignments")
+def export_group_assignments(db: Session = Depends(get_db)):
+    rows = [{
+        "participant_code_anonymized": _participant_anonymous_code(participant),
+        "study_id": participant.study_id,
+        "condition_group": participant.group_id,
+        "condition_id": participant.condition_id,
+        "class_id": participant.class_id,
+        "proficiency_level": participant.proficiency_level,
+        "withdrawn": bool(getattr(participant, "withdrawn", False)),
+    } for participant in db.query(Participant).all()]
+    return _write_csv(db, "group_assignments", rows)
 
 
 @router.get("/exports/attempts")
@@ -2077,6 +2280,14 @@ def export_attempts(db: Session = Depends(get_db)):
             "condition_group": feedback.get("condition_group", policy["condition_group"]),
             "condition_label": feedback.get("condition_label", policy["friendly_label"]),
             "score_available": attempt.assessment_score is not None,
+            "practice_clarity_score": getattr(attempt, "practice_clarity_score", ""),
+            "practice_clarity_score_source": getattr(attempt, "practice_clarity_score_source", ""),
+            "pronunciation_assessment_score": getattr(attempt, "pronunciation_assessment_score", ""),
+            "pronunciation_assessment_score_source": getattr(attempt, "pronunciation_assessment_score_source", ""),
+            "provider_name": getattr(attempt, "assessment_provider", ""),
+            "provider_version": "",
+            "evidence_level": getattr(attempt, "evidence_level", ""),
+            "score_valid_for_formal_research": getattr(attempt, "pronunciation_score_valid_for_research", False),
             "comment_available": bool(feedback.get("word_to_practise") or feedback.get("practice_suggestion")),
             "show_score": feedback.get("show_score", policy["show_score"]),
             "show_comment": feedback.get("show_comment", policy["show_comment"]),
@@ -2088,6 +2299,7 @@ def export_attempts(db: Session = Depends(get_db)):
             "created_at": attempt.created_at.isoformat(),
             "asr_adapter": attempt.asr_adapter,
             "valid_audio": getattr(attempt, "valid_audio", True),
+            "withdrawn": bool(getattr(db.query(Participant).filter(Participant.participant_id == attempt.participant_id).first(), "withdrawn", False)),
         })
     return _write_csv(db, "attempts", rows)
 
@@ -2195,24 +2407,41 @@ def _analysis_ready_rows(db):
         uptake = db.query(FeedbackUptakeState).filter(FeedbackUptakeState.attempt_id == attempt.id).first()
         ratings = db.query(HumanRating).filter(HumanRating.attempt_id == attempt.id).all()
         base = {
-            "participant_code_anonymized": _anonymized_code(attempt.participant_id),
+            "participant_code_anonymized": _participant_anonymous_code(participant or attempt.participant_id),
+            "study_id": attempt.study_id,
+            "study_version_id": getattr(attempt, "study_version_id", 0),
             "condition_group": feedback.get("condition_group", attempt.group_id),
             "class_id": getattr(participant, "class_id", "") if participant else "",
             "proficiency_level": getattr(participant, "proficiency_level", "") if participant else "",
             "session_type": getattr(attempt, "session_type", ""),
+            "is_pre_test": getattr(attempt, "session_type", "") == "pre_test",
+            "is_immediate_post_test": getattr(attempt, "session_type", "") == "immediate_post_test",
+            "is_delayed_post_test": getattr(attempt, "session_type", "") == "delayed_post_test",
             "task_code": getattr(attempt, "task_code", ""),
             "task_id": attempt.task_id,
             "attempt_number": attempt.attempt_number,
+            "audio_validity": getattr(attempt, "valid_audio", True),
+            "invalid_audio_reason": getattr(attempt, "invalid_audio_reason", ""),
             "automatic_overall_score": getattr(assessment, "overall_score", None) if assessment else getattr(attempt, "overall_score", None),
+            "pronunciation_assessment_score": getattr(attempt, "pronunciation_assessment_score", None),
+            "pronunciation_assessment_score_source": getattr(attempt, "pronunciation_assessment_score_source", ""),
+            "practice_clarity_score": getattr(attempt, "practice_clarity_score", None),
+            "practice_clarity_score_source": getattr(attempt, "practice_clarity_score_source", ""),
+            "score_valid_for_formal_research": bool(getattr(attempt, "pronunciation_score_valid_for_research", False)),
+            "evidence_level": getattr(attempt, "evidence_level", ""),
             "accuracy_score": getattr(assessment, "accuracy_score", None) if assessment else "",
             "fluency_score": getattr(assessment, "fluency_score", None) if assessment else "",
             "completeness_score": getattr(assessment, "completeness_score", None) if assessment else "",
             "feedback_type": attempt.feedback_type,
             "feedback_displayed_to_learner": getattr(attempt, "feedback_displayed_to_learner", False),
             "feedback_viewed": getattr(attempt, "feedback_viewed", False),
+            "feedback_view_duration_seconds": getattr(attempt, "feedback_view_time", 0),
             "revision_count": db.query(RevisionEvent).filter(RevisionEvent.previous_attempt_id == attempt.id).count(),
             "uptake_state": uptake.uptake_state if uptake else _feedback_use_state(db, attempt),
             "valid_audio": getattr(attempt, "valid_audio", True),
+            "missing_pronunciation_assessment": getattr(attempt, "pronunciation_assessment_score", None) is None,
+            "missing_human_rating": len(ratings) == 0,
+            "withdrawal_flag": bool(getattr(participant, "withdrawn", False)) if participant else False,
             "system_version": SYSTEM_VERSION,
             "provider_name": getattr(assessment, "provider_name", getattr(attempt, "assessment_provider", "")) if assessment else getattr(attempt, "assessment_provider", ""),
             "provider_version": getattr(assessment, "provider_version", "") if assessment else "",
@@ -2371,7 +2600,24 @@ def export_full(db: Session = Depends(get_db)):
             "created_at": revision.created_at.isoformat(),
         })
     export_sets = {
-        "participants.csv": [clean_model(p) for p in db.query(Participant).all()],
+        "participants.csv": [{
+            "participant_code_anonymized": _participant_anonymous_code(p),
+            "study_id": p.study_id,
+            "condition_group": p.group_id,
+            "class_id": p.class_id,
+            "proficiency_level": p.proficiency_level,
+            "withdrawn": bool(getattr(p, "withdrawn", False)),
+            "created_at": p.created_at,
+        } for p in db.query(Participant).all()],
+        "group_assignments.csv": [{
+            "participant_code_anonymized": _participant_anonymous_code(p),
+            "study_id": p.study_id,
+            "condition_group": p.group_id,
+            "condition_id": p.condition_id,
+            "class_id": p.class_id,
+            "proficiency_level": p.proficiency_level,
+            "withdrawn": bool(getattr(p, "withdrawn", False)),
+        } for p in db.query(Participant).all()],
         "users.csv": [clean_model(row) for row in db.query(User).all()],
         "classes.csv": [clean_model(row) for row in db.query(ClassRoom).all()],
         "groups.csv": [clean_model(row) for row in db.query(LearnerGroup).all()],
@@ -2426,6 +2672,16 @@ def export_participant(participant_id: str, db: Session = Depends(get_db)):
 @router.get("/exports/tasks")
 def export_tasks(db: Session = Depends(get_db)):
     return _write_csv(db, "tasks", [clean_model(t) for t in db.query(Task).all()])
+
+
+@router.get("/exports/sessions")
+def export_sessions(db: Session = Depends(get_db)):
+    return _write_csv(db, "sessions", [clean_model(row) for row in db.query(ResearchSession).all()])
+
+
+@router.get("/exports/task-sets")
+def export_task_sets(db: Session = Depends(get_db)):
+    return _write_csv(db, "task_sets", [clean_model(row) for row in db.query(TaskSet).all()])
 
 
 @router.get("/exports/users")

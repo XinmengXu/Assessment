@@ -27,8 +27,10 @@ class Participant(Base):
     proficiency_level = Column(String, default="")
     l1_background_optional = Column(String, default="")
     session_id = Column(String, default="")
+    anonymous_code = Column(String, default="", index=True)
     withdrawn = Column(Boolean, default=False)
     withdrawal_reason_optional = Column(Text, default="")
+    withdrawal_timestamp = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -201,6 +203,12 @@ class Attempt(Base):
     speech_rate_wpm = Column(Float, default=0.0)
     word_match_score = Column(Float, default=0.0)
     assessment_score = Column(Float, default=0.0)
+    practice_clarity_score = Column(Float, nullable=True)
+    practice_clarity_score_source = Column(String, default="heuristic_practice_indicator")
+    pronunciation_assessment_score = Column(Float, nullable=True)
+    pronunciation_assessment_score_source = Column(String, default="")
+    pronunciation_score_valid_for_research = Column(Boolean, default=False)
+    evidence_level = Column(String, default="practice_indicator")
     missing_words_json = Column(Text, default="[]")
     substitutions_json = Column(Text, default="[]")
     issue_types_detected_json = Column(Text, default="[]")
@@ -368,7 +376,15 @@ class FeedbackUptakeState(Base):
     participant_id = Column(String, index=True)
     task_id = Column(Integer, index=True)
     attempt_id = Column(Integer, index=True)
+    feedback_item_id = Column(Integer, default=0)
     uptake_state = Column(String, default="F0")
+    rule_version = Column(String, default="uptake_rules_v1")
+    evidence_used = Column(Text, default="{}")
+    previous_attempt_id = Column(Integer, default=0)
+    revised_attempt_id = Column(Integer, default=0)
+    later_attempt_id = Column(Integer, default=0)
+    score_delta = Column(Float, default=0.0)
+    target_issue_resolved = Column(Boolean, default=False)
     rules_json = Column(Text, default="{}")
     computed_at = Column(DateTime, default=datetime.utcnow)
 
@@ -591,9 +607,11 @@ class HumanRating(Base):
     __tablename__ = "human_ratings"
 
     id = Column(Integer, primary_key=True)
+    study_id = Column(Integer, default=1, index=True)
     attempt_id = Column(Integer, index=True)
     anonymized_participant_id = Column(String, index=True)
     task_id = Column(Integer, index=True)
+    task_code = Column(String, default="")
     session_type = Column(String, default="")
     rater_id = Column(String, index=True)
     rubric_version = Column(String, default="rubric_v1")
@@ -607,6 +625,8 @@ class HumanRating(Base):
     unusable_recording = Column(Boolean, default=False)
     comments = Column(Text, default="")
     rating_duration_seconds = Column(Float, default=0.0)
+    rating_started_at = Column(DateTime, nullable=True)
+    rating_submitted_at = Column(DateTime, nullable=True)
     rating_timestamp = Column(DateTime, default=datetime.utcnow)
 
 
@@ -716,8 +736,10 @@ def migrate_sqlite_columns():
             "class_id": "VARCHAR DEFAULT ''",
             "proficiency_level": "VARCHAR DEFAULT ''",
             "l1_background_optional": "VARCHAR DEFAULT ''",
+            "anonymous_code": "VARCHAR DEFAULT ''",
             "withdrawn": "BOOLEAN DEFAULT 0",
             "withdrawal_reason_optional": "TEXT DEFAULT ''",
+            "withdrawal_timestamp": "DATETIME",
         },
         "tasks": {
             "task_code": "VARCHAR DEFAULT ''",
@@ -768,6 +790,12 @@ def migrate_sqlite_columns():
             "transcript_confidence_optional": "FLOAT DEFAULT 0",
             "audio_duration": "FLOAT DEFAULT 0",
             "assessment_score": "FLOAT DEFAULT 0",
+            "practice_clarity_score": "FLOAT",
+            "practice_clarity_score_source": "VARCHAR DEFAULT 'heuristic_practice_indicator'",
+            "pronunciation_assessment_score": "FLOAT",
+            "pronunciation_assessment_score_source": "VARCHAR DEFAULT ''",
+            "pronunciation_score_valid_for_research": "BOOLEAN DEFAULT 0",
+            "evidence_level": "VARCHAR DEFAULT 'practice_indicator'",
             "issue_types_detected_json": "TEXT DEFAULT '[]'",
             "alignment_json": "TEXT DEFAULT '{}'",
             "asr_sanity_json": "TEXT DEFAULT '{}'",
@@ -820,6 +848,22 @@ def migrate_sqlite_columns():
             "repeated_issue_reduced": "BOOLEAN DEFAULT 0",
             "transcript_change_summary": "TEXT DEFAULT ''",
         },
+        "feedback_uptake_states": {
+            "feedback_item_id": "INTEGER DEFAULT 0",
+            "rule_version": "VARCHAR DEFAULT 'uptake_rules_v1'",
+            "evidence_used": "TEXT DEFAULT '{}'",
+            "previous_attempt_id": "INTEGER DEFAULT 0",
+            "revised_attempt_id": "INTEGER DEFAULT 0",
+            "later_attempt_id": "INTEGER DEFAULT 0",
+            "score_delta": "FLOAT DEFAULT 0",
+            "target_issue_resolved": "BOOLEAN DEFAULT 0",
+        },
+        "human_ratings": {
+            "study_id": "INTEGER DEFAULT 1",
+            "task_code": "VARCHAR DEFAULT ''",
+            "rating_started_at": "DATETIME",
+            "rating_submitted_at": "DATETIME",
+        },
     }
     if not _database_url.startswith("sqlite"):
         return
@@ -843,6 +887,9 @@ def seed_pilot_accounts():
     db = SessionLocal()
     try:
         if db.query(User).count() > 0:
+            if not db.query(User).filter(User.user_code == "rater001").first():
+                db.add(User(user_code="rater001", role="rater", display_name="Blinded Rater", class_id=1, group_id=1))
+                db.commit()
             return
         class_row = ClassRoom(class_code="CLASS-A", class_name="Pilot Class A")
         db.add(class_row)
@@ -855,8 +902,9 @@ def seed_pilot_accounts():
         teacher = User(user_code="teacher001", role="teacher", display_name="Pilot Teacher", class_id=class_row.id, group_id=group_row.id)
         student = User(user_code="student001", role="student", display_name="Pilot Student", class_id=class_row.id, group_id=group_row.id)
         peer = User(user_code="peer001", role="peer_reviewer", display_name="Peer Reviewer", class_id=class_row.id, group_id=group_row.id)
+        rater = User(user_code="rater001", role="rater", display_name="Blinded Rater", class_id=class_row.id, group_id=group_row.id)
         admin = User(user_code="admin001", role="researcher_admin", display_name="Research Admin", class_id=class_row.id, group_id=group_row.id)
-        db.add_all([teacher, student, peer, admin])
+        db.add_all([teacher, student, peer, rater, admin])
         db.commit()
         class_row.teacher_user_id_optional = teacher.id
         participant = Participant(participant_id="student001", participant_code="student001", group_id="G3", group_label="G3 Score + Comment feedback", class_id=str(class_row.id), condition_id=4)

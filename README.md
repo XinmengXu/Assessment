@@ -346,6 +346,14 @@ Research endpoints:
 - `POST /api/questionnaire-responses`: lightweight questionnaire response logging.
 - `POST /api/consent-records`: consent and withdrawal recording.
 
+Score fields are separated:
+
+- `practice_clarity_score`: transparent low-stakes heuristic practice indicator.
+- `pronunciation_assessment_score`: real provider score from `azure_pronunciation` or `external_import`.
+- `pronunciation_score_valid_for_research`: true only when the provider evidence is model-supported or human-validated.
+
+Human raters can use the `rater` role and the blinded rating page. Example account: `rater001`.
+
 Additional research exports:
 
 - `pronunciation_assessment_results.csv`
@@ -359,7 +367,7 @@ Additional research exports:
 - `analysis_ready_long.csv`
 - `analysis_ready_wide.csv`
 
-See `DEPLOYMENT.md`, `RESEARCH_WORKFLOW.md`, `PRONUNCIATION_ASSESSMENT.md`, `EXPORT_SCHEMA.md`, `ETHICS_AND_PRIVACY.md`, and `PILOT_CHECKLIST.md`.
+See `DEPLOYMENT.md`, `RESEARCH_WORKFLOW.md`, `PRONUNCIATION_ASSESSMENT.md`, `HUMAN_RATING.md`, `EXPORT_SCHEMA.md`, `ETHICS_AND_PRIVACY.md`, and `PILOT_CHECKLIST.md`.
 
 ## Tests
 

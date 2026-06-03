@@ -50,7 +50,7 @@ export type Task = {
   created_at: string;
 };
 
-export type UserRole = "student" | "teacher" | "peer_reviewer" | "researcher_admin";
+export type UserRole = "student" | "teacher" | "peer_reviewer" | "rater" | "researcher_admin";
 
 export type PilotUser = {
   id: number;
@@ -81,6 +81,10 @@ export type Attempt = {
   duration_seconds: number;
   speech_rate_wpm: number;
   word_match_score: number;
+  practice_clarity_score?: number | null;
+  pronunciation_assessment_score?: number | null;
+  pronunciation_score_valid_for_research?: boolean;
+  evidence_level?: string;
   missing_words: string[];
   substitutions: { expected: string; heard: string }[];
   long_pause_count: number;
@@ -303,7 +307,8 @@ function demoUsers(): PilotUser[] {
     demoUser(),
     { id: 2, user_code: "teacher001", role: "teacher", display_name: "Demo Teacher", class_id: 1, group_id: 1, active: true },
     { id: 3, user_code: "peer001", role: "peer_reviewer", display_name: "Demo Peer Reviewer", class_id: 1, group_id: 1, active: true },
-    { id: 4, user_code: "admin001", role: "researcher_admin", display_name: "Demo Admin", class_id: 1, group_id: 1, active: true },
+    { id: 4, user_code: "rater001", role: "rater", display_name: "Demo Rater", class_id: 1, group_id: 1, active: true },
+    { id: 5, user_code: "admin001", role: "researcher_admin", display_name: "Demo Admin", class_id: 1, group_id: 1, active: true },
   ];
 }
 
